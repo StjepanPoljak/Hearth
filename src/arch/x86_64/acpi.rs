@@ -11,7 +11,8 @@
  * descriptions give them. So the DSDT the FADT points at describes each
  * device with an interrupt: COM1, the i8042's keyboard port, and the
  * virtio-mmio slots, which Linux's virtio_mmio driver binds by their
- * _HID, LNRO0005.
+ * _HID, LNRO0005. The FADT's sleep control and status registers, with
+ * the DSDT's \_S5_, let the guest power off.
  *
  * Every table is little-endian, whatever the host, and each one's bytes
  * sum to 0 mod 256. */
@@ -109,16 +110,28 @@ fn xsdt(tables: &[u64]) -> Vec<u8> {
     sdt(b"XSDT", 1, &body)
 }
 
+/* A Generic Address Structure for a byte-wide I/O port. */
+fn gas_io_byte(port: u16) -> Vec<u8> {
+    const SYSTEM_IO: u8 = 1;
+    const BYTE_ACCESS: u8 = 1;
+    let mut gas = vec![];
+    gas.put8(SYSTEM_IO).put8(8).put8(0).put8(BYTE_ACCESS).put64(port as u64);
+    gas
+}
+
 /* FADT revision 6.5. Hardware-reduced: of the fixed hardware fields, all
- * stay 0; only the flags, the boot architecture and the DSDT are set.
- * The UART at 0x3f8 is in the DSDT, so LEGACY_DEVICES stays clear. */
-fn fadt(dsdt_addr: u64) -> Vec<u8> {
+ * stay 0; only the flags, the boot architecture, the DSDT and the sleep
+ * registers are set. The UART at 0x3f8 is in the DSDT, so
+ * LEGACY_DEVICES stays clear. */
+fn fadt(dsdt_addr: u64, platform: &Platform) -> Vec<u8> {
     const BODY_LEN: usize = 276 - 36;
     /* Offsets in the whole table, header included. */
     const IAPC_BOOT_ARCH: usize = 109;
     const FLAGS: usize = 112;
     const MINOR_VERSION: usize = 131;
     const X_DSDT: usize = 140;
+    const SLEEP_CONTROL_REG: usize = 244;
+    const SLEEP_STATUS_REG: usize = 256;
     let mut body = vec![0u8; BODY_LEN];
     let at = |offset: usize| offset - 36;
     body[at(IAPC_BOOT_ARCH)..][..2].copy_from_slice(
@@ -126,6 +139,8 @@ fn fadt(dsdt_addr: u64) -> Vec<u8> {
     body[at(FLAGS)..][..4].copy_from_slice(&FADT_HW_REDUCED_ACPI.to_le_bytes());
     body[at(MINOR_VERSION)] = 5;
     body[at(X_DSDT)..][..8].copy_from_slice(&dsdt_addr.to_le_bytes());
+    body[at(SLEEP_CONTROL_REG)..][..12].copy_from_slice(&gas_io_byte(platform.sleep_control_port));
+    body[at(SLEEP_STATUS_REG)..][..12].copy_from_slice(&gas_io_byte(platform.sleep_status_port));
     sdt(b"FACP", 6, &body)
 }
 
@@ -172,6 +187,7 @@ mod aml {
     const QWORD_PREFIX: u8 = 0x0e;
     const SCOPE_OP: u8 = 0x10;
     const BUFFER_OP: u8 = 0x11;
+    const PACKAGE_OP: u8 = 0x12;
     const EXT_OP_PREFIX: u8 = 0x5b;
     const DEVICE_OP: u8 = 0x82;
     const ROOT_CHAR: u8 = b'\\';
@@ -262,6 +278,15 @@ mod aml {
         out
     }
 
+    /* Package() { elements }, each element already encoded. */
+    pub fn package_of(elements: &[Vec<u8>]) -> Vec<u8> {
+        let mut contents = vec![u8::try_from(elements.len()).expect("AML package of over 255 elements")];
+        contents.put(&elements.concat());
+        let mut out = vec![PACKAGE_OP];
+        out.put(&package(&contents));
+        out
+    }
+
     /* ResourceTemplate() { descriptors }: a buffer of resource
      * descriptors, closed by an end tag whose checksum 0 means none. */
     pub fn resource_template(descriptors: &[Vec<u8>]) -> Vec<u8> {
@@ -313,35 +338,43 @@ pub struct VirtioSlot {
     pub gsi: u32
 }
 
-/* The ISA devices on their usual ports and IRQs. */
-pub struct LegacyDevices {
+/* The rest of the machine: the ISA devices on their usual ports and IRQs,
+ * and the ACPI sleep registers. */
+pub struct Platform {
     pub uart_port: u16,
     pub uart_irq: u32,
     pub i8042_data: u16,
     pub i8042_command: u16,
-    pub i8042_irq: u32
+    pub i8042_irq: u32,
+    pub sleep_control_port: u16,
+    pub sleep_status_port: u16,
+    /* The SLP_TYP that means S5, soft off. */
+    pub s5_sleep_type: u8
 }
 
-/* The DSDT's AML: \_SB with COM1, the i8042's keyboard port and a
- * device per virtio-mmio slot. Each _UID tells devices with the same
- * _HID apart. */
-fn dsdt_aml(legacy: &LegacyDevices, virtio: &[VirtioSlot]) -> Vec<u8> {
+/* The DSDT's AML: \_S5_, then \_SB with COM1, the i8042's keyboard port
+ * and a device per virtio-mmio slot. Each _UID tells devices with the
+ * same _HID apart. */
+fn dsdt_aml(platform: &Platform, virtio: &[VirtioSlot]) -> Vec<u8> {
     use aml::*;
+    /* SLP_TYP for the sleep control register; the other three fields
+     * are for PM1b and reserved. */
+    let s5 = name("_S5", &package_of(&[integer(platform.s5_sleep_type as u64), integer(0), integer(0), integer(0)]));
     let mut devices = vec![];
     devices.put(&device("COM1", &[
         name("_HID", &eisa_id("PNP0501")),
         name("_UID", &integer(1)),
         name("_CRS", &resource_template(&[
-            io(legacy.uart_port, 8),
-            irq_no_flags(legacy.uart_irq)
+            io(platform.uart_port, 8),
+            irq_no_flags(platform.uart_irq)
         ]))
     ].concat()));
     devices.put(&device("PS2K", &[
         name("_HID", &eisa_id("PNP0303")),
         name("_CRS", &resource_template(&[
-            io(legacy.i8042_data, 1),
-            io(legacy.i8042_command, 1),
-            irq_no_flags(legacy.i8042_irq)
+            io(platform.i8042_data, 1),
+            io(platform.i8042_command, 1),
+            irq_no_flags(platform.i8042_irq)
         ]))
     ].concat()));
     for (i, slot) in virtio.iter().enumerate() {
@@ -355,7 +388,7 @@ fn dsdt_aml(legacy: &LegacyDevices, virtio: &[VirtioSlot]) -> Vec<u8> {
             ]))
         ].concat()));
     }
-    root_scope("_SB", &devices)
+    [s5, root_scope("_SB", &devices)].concat()
 }
 
 /* Most vcpus the MADT can describe: local APIC entries hold 8-bit IDs,
@@ -363,12 +396,12 @@ fn dsdt_aml(legacy: &LegacyDevices, virtio: &[VirtioSlot]) -> Vec<u8> {
 pub const MAX_CPUS: u32 = 255;
 
 /* Writes the tables through alloc and returns the RSDP's address. */
-pub fn write_acpi_tables(alloc: &mut BumpAllocator, cpus: u32, legacy: &LegacyDevices,
+pub fn write_acpi_tables(alloc: &mut BumpAllocator, cpus: u32, platform: &Platform,
                          virtio: &[VirtioSlot]) -> Result<u64> {
     assert!((1..=MAX_CPUS).contains(&cpus));
     /* Each table goes in before the ones that point at it. */
-    let dsdt_addr = alloc.push_aligned(&dsdt(&dsdt_aml(legacy, virtio)), Some(8))?;
-    let fadt_addr = alloc.push_aligned(&fadt(dsdt_addr), Some(8))?;
+    let dsdt_addr = alloc.push_aligned(&dsdt(&dsdt_aml(platform, virtio)), Some(8))?;
+    let fadt_addr = alloc.push_aligned(&fadt(dsdt_addr, platform), Some(8))?;
     let madt_addr = alloc.push_aligned(&madt(cpus), Some(8))?;
     let xsdt_addr = alloc.push_aligned(&xsdt(&[fadt_addr, madt_addr]), Some(8))?;
     /* Linux looks for it on 16-byte boundaries when it scans for it. */
@@ -391,8 +424,9 @@ mod tests {
         u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap())
     }
 
-    const LEGACY: LegacyDevices = LegacyDevices {
-        uart_port: 0x3f8, uart_irq: 4, i8042_data: 0x60, i8042_command: 0x64, i8042_irq: 1
+    const PLATFORM: Platform = Platform {
+        uart_port: 0x3f8, uart_irq: 4, i8042_data: 0x60, i8042_command: 0x64, i8042_irq: 1,
+        sleep_control_port: 0x600, sleep_status_port: 0x601, s5_sleep_type: 5
     };
 
     fn slots() -> Vec<VirtioSlot> {
@@ -414,7 +448,7 @@ mod tests {
 
     #[test]
     fn tables_have_length_and_checksum() {
-        for table in [dsdt(&[]), dsdt(&dsdt_aml(&LEGACY, &slots())), fadt(0xe0000),
+        for table in [dsdt(&[]), dsdt(&dsdt_aml(&PLATFORM, &slots())), fadt(0xe0000, &PLATFORM),
                       madt(1), madt(4), xsdt(&[1, 2])] {
             assert_eq!(le32(&table, 4) as usize, table.len());
             assert!(sums_to_zero(&table), "{:?}", std::str::from_utf8(&table[..4]));
@@ -423,7 +457,7 @@ mod tests {
 
     #[test]
     fn fadt_fields() {
-        let f = fadt(0xe0040);
+        let f = fadt(0xe0040, &PLATFORM);
         assert_eq!(&f[..4], b"FACP");
         assert_eq!(f.len(), 276);
         assert_eq!(f[8], 6);
@@ -432,6 +466,9 @@ mod tests {
         assert_eq!(le64(&f, 140), 0xe0040);
         /* The 32-bit DSDT field stays 0: X_DSDT is the one used. */
         assert_eq!(le32(&f, 40), 0);
+        /* Sleep control and status: I/O space, 8 bits, byte access. */
+        assert_eq!(&f[244..256], &[1, 8, 0, 1, 0x00, 0x06, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(&f[256..268], &[1, 8, 0, 1, 0x01, 0x06, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -496,8 +533,10 @@ mod tests {
 
     #[test]
     fn dsdt_names_each_device() {
-        let a = dsdt_aml(&LEGACY, &slots());
+        let a = dsdt_aml(&PLATFORM, &slots());
         let has = |needle: &[u8]| a.windows(needle.len()).any(|w| w == needle);
+        /* Name(_S5_, Package() { 5, 0, 0, 0 }), first, at the root. */
+        assert_eq!(&a[..12], &[0x08, b'_', b'S', b'5', b'_', 0x12, 7, 4, 0x0a, 5, 0, 0]);
         for name in [&b"COM1"[..], b"PS2K", b"VR00", b"VR01", b"LNRO0005"] {
             assert!(has(name), "{:?} missing", std::str::from_utf8(name));
         }
@@ -510,7 +549,7 @@ mod tests {
         let mut mem = vec![0u8; 0x1000];
         let base = 0xe0000;
         let mut alloc = BumpAllocator::new(base, base + mem.len() as u64, mem.as_mut_ptr());
-        let rsdp_addr = write_acpi_tables(&mut alloc, 2, &LEGACY, &slots()).unwrap();
+        let rsdp_addr = write_acpi_tables(&mut alloc, 2, &PLATFORM, &slots()).unwrap();
         assert_eq!(rsdp_addr % 16, 0);
         let at = |gpa: u64| &mem[(gpa - base) as usize..];
         let xsdt = at(le64(at(rsdp_addr), 24));

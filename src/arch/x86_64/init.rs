@@ -9,7 +9,8 @@ use zerocopy::byteorder::{ LE, U32, U64 };
 
 use object::read::elf::{ElfFile64, SectionHeader};
 use object::{Endianness, Object};
-use super::acpi::{ write_acpi_tables, LegacyDevices, VirtioSlot };
+use super::acpi::{ write_acpi_tables, Platform, VirtioSlot };
+use super::power::{ SLEEP_CONTROL_PORT, SLEEP_STATUS_PORT, S5_SLEEP_TYPE };
 use super::i8042::{ I8042_DATA, I8042_COMMAND, I8042_IRQ };
 use super::io::{ UART_PORT, UART_IRQ };
 use super::mmio::{ VIRTIO_BLK_MMIO_ADDR, VIRTIO_BLK_IRQ, VIRTIO_NET_MMIO_ADDR, VIRTIO_NET_IRQ };
@@ -290,15 +291,17 @@ impl VM {
         let boot_alloc = region.add_bump_allocator(HVM_START_INFO_ADDR, EBDA_START)?;
         let module_alloc = region.add_bump_allocator(last_addr.next_multiple_of(PAGE_SIZE), ram_size.min(MMIO_START))?;
         let acpi_alloc = region.add_bump_allocator(ACPI_START, HIMEM_START)?;
-        let legacy = LegacyDevices {
+        let platform = Platform {
             uart_port: UART_PORT, uart_irq: UART_IRQ,
-            i8042_data: I8042_DATA, i8042_command: I8042_COMMAND, i8042_irq: I8042_IRQ
+            i8042_data: I8042_DATA, i8042_command: I8042_COMMAND, i8042_irq: I8042_IRQ,
+            sleep_control_port: SLEEP_CONTROL_PORT, sleep_status_port: SLEEP_STATUS_PORT,
+            s5_sleep_type: S5_SLEEP_TYPE
         };
         let virtio = [
             VirtioSlot { addr: VIRTIO_BLK_MMIO_ADDR, size: VIRTIO_MMIO_SIZE as u32, gsi: VIRTIO_BLK_IRQ },
             VirtioSlot { addr: VIRTIO_NET_MMIO_ADDR, size: VIRTIO_MMIO_SIZE as u32, gsi: VIRTIO_NET_IRQ }
         ];
-        let rsdp_paddr = write_acpi_tables(&mut region.allocators[acpi_alloc], config.cpus, &legacy, &virtio)?;
+        let rsdp_paddr = write_acpi_tables(&mut region.allocators[acpi_alloc], config.cpus, &platform, &virtio)?;
 
         let mut modlist_entries = vec![];
         if let Some(initramfs_path) = &config.initramfs {

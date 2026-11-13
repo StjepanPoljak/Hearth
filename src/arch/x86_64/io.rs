@@ -5,6 +5,7 @@ use std::sync::{ Arc, Mutex };
 use libc::_IOW;
 use std::collections::VecDeque;
 use super::i8042::{ I8042, I8042_DATA, I8042_COMMAND };
+use super::power::{ AcpiSleep, SLEEP_CONTROL_PORT, SLEEP_STATUS_PORT };
 use super::vga::{ Vga, VGA_PORTS, VGA_FRAMEBUFFER, VGA_FRAMEBUFFER_SIZE, VGA_DAC_WRITE_PORTS };
 
 const KVM_IRQ_LINE: libc::Ioctl = _IOW::<kvm_irq_level>(KVMIO, 0x61);
@@ -145,6 +146,7 @@ pub enum DeviceId {
     Uart = 0u64,
     I8042 = 1u64,
     Vga = 2u64,
+    AcpiSleep = 3u64,
     Unknown = !(0u64)
 }
 
@@ -169,6 +171,8 @@ impl VM {
         let vga = Vga::new(framebuffer.map(|p| p as *const u8), region, dirty_log, dac_writes);
         self.io_devices.insert(DeviceId::Vga as u64, vga.clone() as Arc<Mutex<dyn IODevice>>);
         self.display = Some(vga);
+        let sleep = Arc::new(Mutex::new(AcpiSleep::new(self.control.clone())));
+        self.io_devices.insert(DeviceId::AcpiSleep as u64, sleep as Arc<Mutex<dyn IODevice>>);
         Ok(())
     }
 
@@ -177,6 +181,7 @@ impl VM {
             0x3f8..=0x3ff => DeviceId::Uart,
             I8042_DATA | I8042_COMMAND => DeviceId::I8042,
             port if VGA_PORTS.contains(&port) => DeviceId::Vga,
+            SLEEP_CONTROL_PORT | SLEEP_STATUS_PORT => DeviceId::AcpiSleep,
             _ => DeviceId::Unknown
         };
         if let Some(device) = self.io_devices.get(&(dev as u64)) {

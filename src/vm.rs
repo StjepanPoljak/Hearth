@@ -34,7 +34,7 @@ pub enum VmExit {
     /* KVM_EXIT_SHUTDOWN: a triple fault, which is also how x86 guests
      * without another way reset. */
     TripleFault,
-    /* PSCI SYSTEM_OFF (aarch64). */
+    /* PSCI SYSTEM_OFF (aarch64), or ACPI S5 (x86). */
     PoweredOff,
     /* The guest asked for a reset: PSCI SYSTEM_RESET, or the i8042's
      * reset line. Hearth has no reset, so it stops. */

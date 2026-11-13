@@ -1,4 +1,5 @@
 mod acpi;
+mod power;
 mod vcpu;
 mod init;
 mod io;
