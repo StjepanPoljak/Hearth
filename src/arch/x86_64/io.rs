@@ -22,6 +22,9 @@ pub fn arch_update_irq(level: u32, vm_fd: libc::c_int, num: u32) -> Result<()> {
 }
 
 pub struct UART {
+    /* The divisor latch, at 0x3f8 and 0x3f9 while LCR's DLAB is set. */
+    dll: u8,
+    dlm: u8,
     ier: u8, /* 0x3f9 */
     fcr: u8, /* 0x3fa */
     lcr: u8, /* 0x3fb */
@@ -60,7 +63,7 @@ impl UART {
     }
 
     fn new(vm_fd: libc::c_int, control: Arc<VmControl>, serial: &SerialSpec) -> Result<Arc<Mutex<Self>>> {
-        let uart = Arc::new(Mutex::new(UART { ier: 0x0, fcr: 0x0, lcr: 0x0, mcr: 0x0, lsr: 0x0, msr: 0x0, scr: 0x0, thr_ipending: false, irq_level: false, vm_fd, rx: VecDeque::new(), out: SerialOut::default() }));
+        let uart = Arc::new(Mutex::new(UART { dll: 0x0, dlm: 0x0, ier: 0x0, fcr: 0x0, lcr: 0x0, mcr: 0x0, lsr: 0x0, msr: 0x0, scr: 0x0, thr_ipending: false, irq_level: false, vm_fd, rx: VecDeque::new(), out: SerialOut::default() }));
 
         let out = start_serial(serial, uart.clone(), control)?;
         uart.lock().unwrap().out = out;
@@ -78,7 +81,14 @@ impl IODevice for UART {
             let data = unsafe {
                 std::slice::from_raw_parts_mut(base.add(offset), size * count)
         };
+        /* With DLAB set, the guest is setting the baud rate: its writes
+         * to 0x3f8 and 0x3f9 are no character and no IER. */
+        let dlab = self.lcr & 0x80 != 0;
         match (direction, port) {
+            (KVM_EXIT_IO_OUT, 0x3f8) if dlab => self.dll = data[0],
+            (KVM_EXIT_IO_IN, 0x3f8) if dlab => data[0] = self.dll,
+            (KVM_EXIT_IO_OUT, 0x3f9) if dlab => self.dlm = data[0],
+            (KVM_EXIT_IO_IN, 0x3f9) if dlab => data[0] = self.dlm,
             (KVM_EXIT_IO_OUT, 0x3f8) => {
                 if data[0] == b'\n' {
                     self.out.write(b"\r");
