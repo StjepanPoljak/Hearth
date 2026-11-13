@@ -17,9 +17,12 @@ bare-metal Doom.
 | Keyboard | i8042 (PS/2) | | |
 | Display | VGA mode 13h, served over VNC | | |
 
-On x86 the guest gets `--cpus` vcpus (1 by default), and Linux finds
-them in the ACPI tables Hearth makes: an MADT listing a local APIC per
-vcpu and the IOAPIC. On aarch64 and riscv64 it gets one. On riscv64 Hearth emulates a PLIC for
+On x86 Linux finds the vcpus and devices in the ACPI tables Hearth makes:
+an MADT with a local APIC per vcpu (`--cpus`, 1 by default) and the
+IOAPIC, and a hardware-reduced FADT whose DSDT describes the UART, the
+i8042 and the virtio-mmio slots. The guest kernel needs `CONFIG_ACPI` and
+`CONFIG_PNP`, which `x86_64_defconfig` has. On aarch64 and riscv64 the
+guest gets one vcpu. On riscv64 Hearth emulates a PLIC for
 interrupts, and the device layout is QEMU virt's. Hearth makes the
 device tree there itself, with `--memory`, `--initramfs`, `--disk` and
 `--append` (its bootargs) in it; `--dtb` gives one to use instead.

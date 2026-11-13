@@ -11,7 +11,7 @@ use super::io::arch_update_irq;
 
 pub const I8042_DATA: u16 = 0x60;
 pub const I8042_COMMAND: u16 = 0x64;
-const I8042_IRQ: u32 = 1;
+pub const I8042_IRQ: u32 = 1;
 
 /* Status register (read 0x64) */
 const STATUS_OBF: u8 = 0x01;       /* output buffer full */

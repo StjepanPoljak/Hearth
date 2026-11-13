@@ -9,6 +9,10 @@ use super::vga::{ Vga, VGA_PORTS, VGA_FRAMEBUFFER, VGA_FRAMEBUFFER_SIZE, VGA_DAC
 
 const KVM_IRQ_LINE: libc::Ioctl = _IOW::<kvm_irq_level>(KVMIO, 0x61);
 
+/* COM1: its eight ports, and its ISA IRQ. */
+pub const UART_PORT: u16 = 0x3f8;
+pub const UART_IRQ: u32 = 4;
+
 pub fn arch_update_irq(level: u32, vm_fd: libc::c_int, num: u32) -> Result<()> {
     let mut irq : kvm_irq_level = unsafe { std::mem::zeroed() };
     irq.level = level;
@@ -56,7 +60,7 @@ impl UART {
 
         if level != self.irq_level {
             self.irq_level = level;
-            arch_update_irq(if level { 1 } else { 0 } as u32, self.vm_fd, 0x4)?;
+            arch_update_irq(if level { 1 } else { 0 } as u32, self.vm_fd, UART_IRQ)?;
         }
 
         Ok(())

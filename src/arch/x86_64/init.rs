@@ -1,7 +1,7 @@
 use anyhow::{ anyhow, Context, Result };
 use crate::syscall_check;
 use crate::{ kvm_cpuid2, kvm_cpuid_entry2, kvm_pit_config };
-use crate::{ VCPU, VM, KvmDev, VmConfig, KVMIO, PAGE_SIZE };
+use crate::{ VCPU, VM, KvmDev, VmConfig, KVMIO, PAGE_SIZE, VIRTIO_MMIO_SIZE };
 use crate::{ read_le64, read_le32, load_elf, read_file };
 use libc::{_IOW, _IO, _IOWR};
 use zerocopy::{ Immutable, IntoBytes };
@@ -9,7 +9,9 @@ use zerocopy::byteorder::{ LE, U32, U64 };
 
 use object::read::elf::{ElfFile64, SectionHeader};
 use object::{Endianness, Object};
-use super::acpi::write_acpi_tables;
+use super::acpi::{ write_acpi_tables, LegacyDevices, VirtioSlot };
+use super::i8042::{ I8042_DATA, I8042_COMMAND, I8042_IRQ };
+use super::io::{ UART_PORT, UART_IRQ };
 use super::mmio::{ VIRTIO_BLK_MMIO_ADDR, VIRTIO_BLK_IRQ, VIRTIO_NET_MMIO_ADDR, VIRTIO_NET_IRQ };
 
 const KVM_SET_TSS_ADDR: libc::Ioctl = _IO(KVMIO, 0x47);
@@ -274,7 +276,11 @@ impl VM {
 
         let last_addr = load_elf(self, &vmlinux, &vmlinux_data, linux_mem_idx)?;
 
-        let mut cmdline = format!("console=ttyS0,115200 root=/dev/vda virtio_mmio.device=4K@{:#x}:{} virtio_mmio.device=4K@{:#x}:{}", VIRTIO_BLK_MMIO_ADDR, VIRTIO_BLK_IRQ, VIRTIO_NET_MMIO_ADDR, VIRTIO_NET_IRQ);
+        /* The devices are in the ACPI tables, not on the command line.
+         * reboot=k: on hardware-reduced ACPI, Linux reboots through EFI
+         * and then the BIOS, and Hearth has neither; it has the i8042,
+         * whose reset line stops it. --append can still say otherwise. */
+        let mut cmdline = String::from("console=ttyS0,115200 root=/dev/vda reboot=k");
         if let Some(append) = &config.append {
             cmdline = format!("{} {}", cmdline, append);
         }
@@ -284,7 +290,15 @@ impl VM {
         let boot_alloc = region.add_bump_allocator(HVM_START_INFO_ADDR, EBDA_START)?;
         let module_alloc = region.add_bump_allocator(last_addr.next_multiple_of(PAGE_SIZE), ram_size.min(MMIO_START))?;
         let acpi_alloc = region.add_bump_allocator(ACPI_START, HIMEM_START)?;
-        let rsdp_paddr = write_acpi_tables(&mut region.allocators[acpi_alloc], config.cpus)?;
+        let legacy = LegacyDevices {
+            uart_port: UART_PORT, uart_irq: UART_IRQ,
+            i8042_data: I8042_DATA, i8042_command: I8042_COMMAND, i8042_irq: I8042_IRQ
+        };
+        let virtio = [
+            VirtioSlot { addr: VIRTIO_BLK_MMIO_ADDR, size: VIRTIO_MMIO_SIZE as u32, gsi: VIRTIO_BLK_IRQ },
+            VirtioSlot { addr: VIRTIO_NET_MMIO_ADDR, size: VIRTIO_MMIO_SIZE as u32, gsi: VIRTIO_NET_IRQ }
+        ];
+        let rsdp_paddr = write_acpi_tables(&mut region.allocators[acpi_alloc], config.cpus, &legacy, &virtio)?;
 
         let mut modlist_entries = vec![];
         if let Some(initramfs_path) = &config.initramfs {
