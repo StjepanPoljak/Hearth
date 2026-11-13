@@ -76,6 +76,11 @@ impl VCPU {
                     unsafe { std::ptr::write_volatile(&mut (*run).immediate_exit, 0); }
                     continue;
                 }
+                /* An AP waiting for its SIPI got an INIT or a SIPI: KVM
+                 * returns to have it run again, in its new state. */
+                if e.raw_os_error() == Some(libc::EAGAIN) {
+                    continue;
+                }
                 self.print_regs()?;
                 return Err(e).context("KVM_RUN");
             }

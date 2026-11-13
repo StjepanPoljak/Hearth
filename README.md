@@ -17,7 +17,9 @@ bare-metal Doom.
 | Keyboard | i8042 (PS/2) | | |
 | Display | VGA mode 13h, served over VNC | | |
 
-The guest gets one vcpu. On riscv64 Hearth emulates a PLIC for
+On x86 the guest gets `--cpus` vcpus (1 by default), and Linux finds
+them in the ACPI tables Hearth makes: an MADT listing a local APIC per
+vcpu and the IOAPIC. On aarch64 and riscv64 it gets one. On riscv64 Hearth emulates a PLIC for
 interrupts, and the device layout is QEMU virt's. Hearth makes the
 device tree there itself, with `--memory`, `--initramfs`, `--disk` and
 `--append` (its bootargs) in it; `--dtb` gives one to use instead.
@@ -57,6 +59,7 @@ are taken from the current directory, not the file's.
 name = "web1"
 kernel = "vmlinux"
 memory = "1G"
+cpus = 2
 append = "root=/dev/vda"
 serial = "unix:/tmp/web1.sock"
 tap = "tap0"

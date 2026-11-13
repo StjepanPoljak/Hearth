@@ -17,7 +17,9 @@ pub fn arch_pre_vcpu_init(_kvm_dev: &KvmDev, _vm: &mut VM) -> Result<()> {
     Ok(())
 }
 
-pub fn arch_init(_kvm_dev: &KvmDev, vm: &mut VM, vcpu: &mut VCPU) -> Result<()> {
+/* One vcpu so far: VmConfig::validate allows more only on x86. */
+pub fn arch_init(_kvm_dev: &KvmDev, vm: &mut VM, vcpus: &mut [VCPU]) -> Result<()> {
+    let [vcpu] = vcpus else { bail!("aarch64 runs one vcpu, not {}.", vcpus.len()) };
     vcpu.arm_vcpu_init()?;
     vm.setup_irq_device()
 }

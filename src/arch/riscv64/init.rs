@@ -12,7 +12,8 @@ pub fn arch_pre_vcpu_init(_kvm_dev: &KvmDev, _vm: &mut VM) -> Result<()> {
 }
 
 /* RISC-V vcpus need no init ioctl. The PLIC interrupts the one vcpu. */
-pub fn arch_init(_kvm_dev: &KvmDev, _vm: &mut VM, vcpu: &mut VCPU) -> Result<()> {
+pub fn arch_init(_kvm_dev: &KvmDev, _vm: &mut VM, vcpus: &mut [VCPU]) -> Result<()> {
+    let [vcpu] = vcpus else { bail!("riscv64 runs one vcpu, not {}.", vcpus.len()) };
     PLIC.lock().unwrap().set_vcpu(vcpu.fd)
 }
 

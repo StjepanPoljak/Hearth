@@ -9,6 +9,7 @@ use zerocopy::byteorder::{ LE, U32, U64 };
 
 use object::read::elf::{ElfFile64, SectionHeader};
 use object::{Endianness, Object};
+use super::acpi::write_acpi_tables;
 use super::mmio::{ VIRTIO_BLK_MMIO_ADDR, VIRTIO_BLK_IRQ, VIRTIO_NET_MMIO_ADDR, VIRTIO_NET_IRQ };
 
 const KVM_SET_TSS_ADDR: libc::Ioctl = _IO(KVMIO, 0x47);
@@ -57,7 +58,7 @@ const E820_RESERVED: u32 = 2;
 
 impl HvmStartInfo {
     fn new(nr_modules: u32, modlist_paddr: u64, cmdline_paddr: u64,
-           memmap_paddr: u64, memmap_entries: u32) -> Self {
+           rsdp_paddr: u64, memmap_paddr: u64, memmap_entries: u32) -> Self {
         /* "xEn3" with the top bit of 'E' set. */
         let mut magic = [ 'x', 'E', 'n', '3' ].map(|c| c as u8); magic[1] |= 0x80;
         HvmStartInfo {
@@ -67,7 +68,7 @@ impl HvmStartInfo {
             nr_modules: nr_modules.into(),
             modlist_paddr: modlist_paddr.into(),
             cmdline_paddr: cmdline_paddr.into(),
-            rsdp_paddr: 0.into(),
+            rsdp_paddr: rsdp_paddr.into(),
             memmap_paddr: memmap_paddr.into(),
             memmap_entries: memmap_entries.into(),
             reserved: 0.into()
@@ -125,31 +126,112 @@ pub fn arch_pre_vcpu_init(_kvm_dev: &KvmDev, vm: &mut VM) -> Result<()> {
 }
 
 /* Debug aid, not called: prints the function and index of each CPUID
- * entry, e.g. from arch_init after KVM_GET_SUPPORTED_CPUID. */
+ * entry, e.g. from arch_init after supported_cpuid. */
 #[allow(dead_code)]
-unsafe fn print_cpuid(cpuid2: *const kvm_cpuid2) {
-    let nent = unsafe { (*cpuid2).nent as usize };
-    let entries = unsafe { (*cpuid2).__bindgen_anon_1.entries.as_slice(nent) };
+fn print_cpuid(entries: &[kvm_cpuid_entry2]) {
     for entry in entries {
         println!("{:#x} {:#x}", entry.function, entry.index);
     }
 }
 
-pub fn arch_init(kvm_dev: &KvmDev, _vm: &mut VM, vcpu: &mut VCPU) -> Result<()> {
-    let mut cpuid2_buf = vec![0u32; size_of::<kvm_cpuid2>() + 256 * size_of::<kvm_cpuid_entry2>()];
-    let cpuid2 = cpuid2_buf.as_mut_ptr() as *mut kvm_cpuid2;
-    unsafe { (*cpuid2).nent = 256; }
+/* The entry's index matters: one entry per subleaf. */
+const KVM_CPUID_FLAG_SIGNIFCANT_INDEX: u32 = 1;
+const MAX_CPUID_ENTRIES: usize = 256;
 
+fn supported_cpuid(kvm_dev: &KvmDev) -> Result<Vec<kvm_cpuid_entry2>> {
+    let mut buf = vec![0u32; (size_of::<kvm_cpuid2>() + MAX_CPUID_ENTRIES * size_of::<kvm_cpuid_entry2>()) / 4];
+    let cpuid2 = buf.as_mut_ptr() as *mut kvm_cpuid2;
+    unsafe { (*cpuid2).nent = MAX_CPUID_ENTRIES as u32; }
     syscall_check("KVM_GET_SUPPORTED_CPUID", unsafe { libc::ioctl(kvm_dev.fd(), KVM_GET_SUPPORTED_CPUID, cpuid2) })?;
+    let nent = unsafe { (*cpuid2).nent as usize };
+    Ok(unsafe { (*cpuid2).__bindgen_anon_1.entries.as_slice(nent) }.to_vec())
+}
 
+fn set_cpuid(vcpu: &VCPU, entries: &[kvm_cpuid_entry2]) -> Result<()> {
+    let mut buf = vec![0u32; (size_of::<kvm_cpuid2>() + entries.len() * size_of::<kvm_cpuid_entry2>()) / 4];
+    let cpuid2 = buf.as_mut_ptr() as *mut kvm_cpuid2;
+    unsafe {
+        (*cpuid2).nent = entries.len() as u32;
+        (*cpuid2).__bindgen_anon_1.entries.as_mut_slice(entries.len()).copy_from_slice(entries);
+    }
     syscall_check("KVM_SET_CPUID2", unsafe { libc::ioctl(vcpu.fd, KVM_SET_CPUID2, cpuid2) })?;
+    Ok(())
+}
 
-    let mut sregs2 = vcpu.get_sregs2()?;
+/* KVM's CPUID as the host has it, made to describe this VM: `cpus`
+ * cores of one thread each in one package, this vcpu's APIC ID being
+ * its id, as KVM makes its local APIC's. Linux checks the APIC IDs the
+ * CPUID gives against the MADT's. */
+fn vcpu_cpuid(supported: &[kvm_cpuid_entry2], apic_id: u32, cpus: u32) -> Vec<kvm_cpuid_entry2> {
+    /* Bits of the x2APIC ID that number the cores in a package. */
+    let core_bits = cpus.next_power_of_two().trailing_zeros();
+    let mut entries: Vec<kvm_cpuid_entry2> = supported.iter()
+        .filter(|e| e.function != 0xb && e.function != 0x1f)
+        .copied()
+        .collect();
+    for e in entries.iter_mut() {
+        match e.function {
+            1 => {
+                /* EBX: initial APIC ID in 31:24, addressable logical
+                 * processors in 23:16. EDX bit 28, HTT: that count is valid. */
+                e.ebx = (e.ebx & 0xffff) | (apic_id << 24) | ((1 << core_bits) << 16);
+                e.edx |= 1 << 28;
+            }
+            /* Type 0: no more caches. */
+            4 if e.eax & 0x1f != 0 => {
+                /* EAX 31:26: core IDs in a package, less one; 25:14:
+                 * threads sharing this cache, less one. Each core has
+                 * its own L1 and L2, and they share the L3. */
+                let level = (e.eax >> 5) & 0x7;
+                let sharing = if level >= 3 { (1 << core_bits) - 1 } else { 0 };
+                e.eax = (e.eax & 0x3fff) | (sharing << 14) | (((1 << core_bits) - 1) << 26);
+            }
+            _ => ()
+        }
+    }
+    /* Extended topology: an SMT level of one thread, then a core level
+     * of `cpus`; the subleaf after the last has level type 0. EDX is the
+     * x2APIC ID in every subleaf. 0x1f is 0xb's successor; Linux takes
+     * it when the maximum leaf reaches it. */
+    let max_leaf = supported.iter().find(|e| e.function == 0).map_or(0, |e| e.eax);
+    for function in [0xb, 0x1f].into_iter().filter(|&f| f <= max_leaf) {
+        let levels = [
+            (0, 1, 1),                   /* EAX: shift to the next level, EBX: logical processors, ECX 15:8: level type */
+            (core_bits, cpus, 2),
+            (0, 0, 0)
+        ];
+        for (index, (shift, count, kind)) in levels.into_iter().enumerate() {
+            entries.push(kvm_cpuid_entry2 {
+                function,
+                index: index as u32,
+                flags: KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
+                eax: shift,
+                ebx: count,
+                ecx: (kind << 8) | index as u32,
+                edx: apic_id,
+                padding: [0; 3]
+            });
+        }
+    }
+    entries
+}
+
+/* vcpus[0] is the boot processor, which starts at the VMM's entry point;
+ * KVM keeps the others waiting for the INIT and SIPI the guest sends. */
+pub fn arch_init(kvm_dev: &KvmDev, _vm: &mut VM, vcpus: &mut [VCPU]) -> Result<()> {
+    let supported = supported_cpuid(kvm_dev)?;
+    let cpus = vcpus.len() as u32;
+    for vcpu in vcpus.iter() {
+        set_cpuid(vcpu, &vcpu_cpuid(&supported, vcpu.id, cpus))?;
+    }
+
+    let bsp = &mut vcpus[0];
+    let mut sregs2 = bsp.get_sregs2()?;
 
     sregs2.cs.base = 0;
     sregs2.cs.selector = 0;
 
-    vcpu.set_sregs2(sregs2)
+    bsp.set_sregs2(sregs2)
 }
 
 impl VM {
@@ -173,6 +255,7 @@ impl VM {
         Err(anyhow!("No valid PVH entry found."))
     }
 
+    /* vcpu is the boot processor; the ACPI tables describe config.cpus. */
     fn linux_pvh_boot(&mut self, vcpu: &mut VCPU, config: &VmConfig) -> Result<()> {
         let vmlinux_path = config.linux.as_ref().unwrap();
         let vmlinux_data = read_file(vmlinux_path)?;
@@ -182,6 +265,8 @@ impl VM {
         let pvh_entrypoint = self.try_pvh_entrypoint(&vmlinux)?;
 
         const EBDA_START: u64 = 0x9fc00;
+        /* The BIOS area, reserved in the E820 map: the ACPI tables. */
+        const ACPI_START: u64 = 0xe_0000;
         const HIMEM_START: u64 = 0x10_0000;
 
         let ram_size = config.memory.unwrap_or(1 << 30) as u64;
@@ -198,6 +283,8 @@ impl VM {
         let region = self.mem_region_mut(linux_mem_idx)?;
         let boot_alloc = region.add_bump_allocator(HVM_START_INFO_ADDR, EBDA_START)?;
         let module_alloc = region.add_bump_allocator(last_addr.next_multiple_of(PAGE_SIZE), ram_size.min(MMIO_START))?;
+        let acpi_alloc = region.add_bump_allocator(ACPI_START, HIMEM_START)?;
+        let rsdp_paddr = write_acpi_tables(&mut region.allocators[acpi_alloc], config.cpus)?;
 
         let mut modlist_entries = vec![];
         if let Some(initramfs_path) = &config.initramfs {
@@ -231,7 +318,7 @@ impl VM {
 
         let hvm_start_info = HvmStartInfo::new(
             modlist_entries.len() as u32, modlist_paddr, cmdline_paddr,
-            memmap_paddr, memmap_entries.len() as u32);
+            rsdp_paddr, memmap_paddr, memmap_entries.len() as u32);
         let start_info_paddr = boot.push_aligned(&[hvm_start_info], Some(PAGE_SIZE))?;
 
         let mut regs = vcpu.get_regs()?;

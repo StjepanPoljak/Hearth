@@ -24,6 +24,11 @@ pub struct Args {
     #[arg(short, long, value_parser = parse_mem_size)]
     memory: Option<usize>,
 
+    /// Number of vcpus; more than 1 on x86 only, where Linux finds them
+    /// in the ACPI tables Hearth makes [default: 1]
+    #[arg(long)]
+    cpus: Option<u32>,
+
     /// Load address [default: 0x1000]
     #[arg(short, long)]
     load_addr: Option<u64>,
@@ -105,6 +110,9 @@ impl Args {
             }
         }
         set!(name, binary, linux, memory, dtb, initramfs, append, disk, tap, vnc);
+        if let Some(cpus) = self.cpus {
+            config.cpus = cpus;
+        }
         if let Some(load_addr) = self.load_addr {
             config.load_addr = load_addr;
         }

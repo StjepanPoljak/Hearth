@@ -9,6 +9,7 @@ use std::fs;
 use serde::{ Deserialize, Deserializer };
 use serde::de::Error;
 use crate::{ parse_number, parse_serial, SerialSpec };
+use crate::arch::MAX_CPUS;
 
 pub const DEFAULT_LOAD_ADDR: u64 = 0x1000;
 pub const DEFAULT_BLK_QUEUE_SIZE: u32 = 128;
@@ -24,6 +25,8 @@ pub struct VmConfig {
     /* In bytes; written as for --memory, e.g. "1G", or as a number of bytes. */
     #[serde(deserialize_with = "de_mem_size")]
     pub memory: Option<usize>,
+    /* vcpus; more than one only on x86 so far. */
+    pub cpus: u32,
     pub load_addr: u64,
     pub dtb: Option<String>,
     pub initramfs: Option<String>,
@@ -43,6 +46,7 @@ impl Default for VmConfig {
             binary: None,
             linux: None,
             memory: None,
+            cpus: 1,
             load_addr: DEFAULT_LOAD_ADDR,
             dtb: None,
             initramfs: None,
@@ -77,6 +81,7 @@ impl VmConfig {
                                         (or linux or binary in the --config file)".into()),
             _ => ()
         }
+        check_range("cpus", self.cpus, 1, MAX_CPUS)?;
         if let Some(memory) = self.memory {
             /* KVM maps guest memory in whole host pages. */
             let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
@@ -244,6 +249,7 @@ mod tests {
             append = "root=/dev/vda"
             serial = "unix:/tmp/web1.sock"
             tap = "tap0"
+            cpus = 1
 
             [disk]
             path = "rootfs.img"
@@ -253,6 +259,7 @@ mod tests {
         assert_eq!(config.name.as_deref(), Some("web1"));
         assert_eq!(config.linux.as_deref(), Some("vmlinux"));
         assert_eq!(config.memory, Some(512 << 20));
+        assert_eq!(config.cpus, 1);
         assert_eq!(config.load_addr, DEFAULT_LOAD_ADDR);
         assert!(matches!(config.serial, SerialSpec::Unix(ref p) if p == "/tmp/web1.sock"));
         assert_eq!(config.disk, Some(disk("rootfs.img", 256, Some(126))));
@@ -295,13 +302,18 @@ mod tests {
         assert!(VmConfig::default().validate().is_err());
         let both = VmConfig { binary: Some("a.bin".into()), ..linux(None) };
         assert!(both.validate().is_err());
+        let cpus = |cpus| VmConfig { cpus, ..linux(None) };
+        assert!(cpus(1).validate().is_ok());
+        assert!(cpus(0).validate().is_err());
+        assert!(cpus(MAX_CPUS).validate().is_ok());
+        assert!(cpus(MAX_CPUS + 1).validate().is_err());
     }
 
     #[test]
     fn toml_errors() {
         for bad in ["memroy = \"1G\"", "memory = 0", "memory = -4096", "memory = 1.5",
                     "memory = \"1T\"", "memory = \"1.5G\"", "serial = \"tty\"",
-                    "load_addr = -1", "[disk]\nqueue_size = 4",
+                    "load_addr = -1", "cpus = -1", "cpus = \"2\"", "[disk]\nqueue_size = 4",
                     "[disk]\npath = \"a.img\"\nqueue_size = 0",
                     "[disk]\npath = \"a.img\"\nqueue_size = 32769",
                     "[disk]\npath = \"a.img\"\nseg_max = 0",

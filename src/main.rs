@@ -100,20 +100,24 @@ fn run(args: &Args, config: &VmConfig) -> Result<VmExit> {
 
     arch::arch_pre_vcpu_init(&kvm_dev, &mut vm)?;
 
-    let mut vcpu = vm.create_vcpu(0, kvm_dev.get_kvm_run_size())?;
+    let mut vcpus = (0..config.cpus)
+        .map(|id| vm.create_vcpu(id, kvm_dev.get_kvm_run_size()))
+        .collect::<Result<Vec<_>>>()?;
 
     match &config.name {
         Some(name) => println!("\nHearth: {}\r", name),
         None => println!("\nHearth\r")
     }
 
-    arch::arch_init(&kvm_dev, &mut vm, &mut vcpu)?;
+    arch::arch_init(&kvm_dev, &mut vm, &mut vcpus)?;
 
+    /* The boot processor; the others wait for the guest to start them. */
+    let vcpu = &mut vcpus[0];
     vcpu.set_ip(config.load_addr as usize)?;
 
     /* Guest memory is complete before any device (and device thread) exists. */
     if let Some(_) = config.linux {
-        vm.load_linux(&mut vcpu, config)?;
+        vm.load_linux(vcpu, config)?;
     } else if let Some(binary) = &config.binary {
         let mem_region_idx = vm.add_ram(config.memory.unwrap_or(256 << 10))?;
         vm.load_file_to_memory(mem_region_idx, binary, config.load_addr)?;
@@ -134,7 +138,7 @@ fn run(args: &Args, config: &VmConfig) -> Result<VmExit> {
     }
 
     vm.init_mmio_devices(config)?;
-    vm.init_io_devices(&vcpu, config)?;
+    vm.init_io_devices(&vcpus[0], config)?;
     let dirty_log = match args.dirty_log {
         Some((gpa, size)) => Some(vm.log_dirty_pages(gpa, size)?),
         None => None
@@ -143,7 +147,7 @@ fn run(args: &Args, config: &VmConfig) -> Result<VmExit> {
         start_rfb(addr.as_str(), vm.display.clone(), vm.keyboard.clone())?;
     }
 
-    let res = vm.run(vec![vcpu]);
+    let res = vm.run(vcpus);
     if let Some(log) = dirty_log {
         /* The VM's own error matters more; only report this one. */
         if let Err(e) = print_dirty_pages(&log) {
