@@ -87,6 +87,38 @@ authentication, so keep it on localhost or tunnel it.
 and `make-alpine-rootfs.sh` an Alpine rootfs for running containers.
 `hearth --help` lists every option.
 
+## Kubernetes
+
+`make-k3s-rootfs.sh` adds [k3s](https://k3s.io) to that rootfs, for a
+single-node cluster with no registry to pull from: the k3s binary and its
+air-gap images, checked against the release's sha256 sums, the host's
+`nginx` image for workloads (`IMAGES=...` for others), and an OpenRC
+service starting the server at boot. k3s's traefik ingress and ServiceLB
+are off, as ServiceLB's pods need iptables-legacy and the guest kernel
+has only nftables; NodePort Services reach the host.
+It also fetches a `kubectl` of the same version for the host:
+
+```sh
+./make-guest-kernel.sh build/linux-src      # build/linux/vmlinux
+./make-k3s-rootfs.sh                        # build/k3s.img
+sudo ./make-tap.sh up
+target/release/hearth --kernel build/linux/vmlinux --disk build/k3s.img \
+    --cpus 2 --memory 2G --tap tap0 --balloon
+```
+
+`--balloon` gives the guest a virtio-balloon with free page reporting, so
+the RAM it frees goes back to the host.
+
+The node and the API server are on 192.168.100.2. k3s writes the admin
+kubeconfig to `/etc/rancher/k3s/k3s.yaml` in the guest; with its server
+changed to `https://192.168.100.2:6443`, `kubectl` on the host uses it.
+`poweroff` in the guest stops Hearth.
+
+`guests/k3s/run.sh build/linux/vmlinux build/k3s.img` boots the cluster
+and checks it from the host: the node Ready, the system pods, a Deployment
+behind a NodePort Service, cluster DNS, a PersistentVolumeClaim, the
+metrics server, and power off. `KEEP=1` leaves it running.
+
 ## Several VMs
 
 Each VM is its own Hearth process. `run-vms.sh` starts several, each with
@@ -122,6 +154,10 @@ programs for x86 that check Hearth from inside a VM. Each one has a
   be RAM.
 
 They need `/dev/kvm`, and so don't run in `cargo test`.
+
+`guests/k3s/run.sh KERNEL DISK` checks a Linux guest under load: a
+Kubernetes cluster on SMP, virtio-blk and virtio-net (see Kubernetes
+above).
 
 `guests/nested/run-riscv64-hearth.sh [--linux [--disk] | --binary] KERNEL`
 tests riscv64 without RISC-V hardware: QEMU (TCG, with the hypervisor
