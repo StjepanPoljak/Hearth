@@ -1,0 +1,13 @@
+# guests/k3s/run.sh applies this, then checks the client can no longer
+# reach web: k3s's network policy controller has to have loaded its
+# iptables rules for that.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-deny-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes:
+    - Ingress

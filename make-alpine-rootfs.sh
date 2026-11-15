@@ -5,6 +5,9 @@
 # static eth0 address matching the make-tap.sh defaults.
 #
 # Usage: ./make-alpine-rootfs.sh [output.img] [size]
+#   PACKAGES  more Alpine packages to install
+#   OVERLAY   a directory whose contents are copied over the finished
+#             root, owned by root (make-k3s-rootfs.sh adds k3s this way)
 #
 # Needs docker and network access (to pull alpine and its packages), and
 # mke2fs >= 1.47.1, which can populate an image from a tarball. No root
@@ -19,10 +22,15 @@ TAR=${OUT%.img}.tar
 
 mkdir -p "$(dirname "$OUT")"
 
+set --
+if [ -n "$OVERLAY" ]; then
+    set -- -v "$(realpath "$OVERLAY")":/overlay:ro
+fi
+
 # Docker bind-mounts /etc/hosts, /etc/hostname and /etc/resolv.conf into the
 # container, so the guest root is built in /rootfs instead of / and streamed
 # out as a tarball.
-docker run --rm -i "$ALPINE" sh -s > "$TAR" <<'EOF'
+docker run --rm -i -e PACKAGES="$PACKAGES" "$@" "$ALPINE" sh -s > "$TAR" <<'EOF'
 set -e
 exec 3>&1 1>&2
 
@@ -30,7 +38,7 @@ R=/rootfs
 mkdir -p $R/etc/apk
 cp -r /etc/apk/keys /etc/apk/repositories $R/etc/apk/
 apk add --root $R --initdb --no-cache \
-    alpine-base ca-certificates e2fsprogs iptables ip6tables
+    alpine-base ca-certificates e2fsprogs iptables ip6tables $PACKAGES
 
 cat > $R/etc/inittab <<'INITTAB'
 ::sysinit:/sbin/openrc sysinit
@@ -73,6 +81,11 @@ for s in fsck root localmount hostname bootmisc sysctl seedrng cgroups networkin
     add_service boot $s
 done
 for s in mount-ro killprocs savecache; do add_service shutdown $s; done
+
+# Without -p, cp gives what it creates to root; symlinks stay symlinks.
+if [ -d /overlay ]; then
+    cp -R /overlay/. $R/
+fi
 
 tar -C $R --numeric-owner -cf - . >&3
 EOF
