@@ -13,7 +13,7 @@ use super::acpi::{ write_acpi_tables, Platform, VirtioSlot };
 use super::power::{ SLEEP_CONTROL_PORT, SLEEP_STATUS_PORT, S5_SLEEP_TYPE };
 use super::i8042::{ I8042_DATA, I8042_COMMAND, I8042_IRQ };
 use super::io::{ UART_PORT, UART_IRQ };
-use super::mmio::{ VIRTIO_BLK_MMIO_ADDR, VIRTIO_BLK_IRQ, VIRTIO_NET_MMIO_ADDR, VIRTIO_NET_IRQ };
+use super::mmio::{ VIRTIO_BALLOON_MMIO_ADDR, VIRTIO_BALLOON_IRQ, VIRTIO_BLK_MMIO_ADDR, VIRTIO_BLK_IRQ, VIRTIO_NET_MMIO_ADDR, VIRTIO_NET_IRQ };
 
 const KVM_SET_TSS_ADDR: libc::Ioctl = _IO(KVMIO, 0x47);
 const KVM_CREATE_IRQCHIP: libc::Ioctl = _IO(KVMIO, 0x60);
@@ -297,10 +297,13 @@ impl VM {
             sleep_control_port: SLEEP_CONTROL_PORT, sleep_status_port: SLEEP_STATUS_PORT,
             s5_sleep_type: S5_SLEEP_TYPE
         };
-        let virtio = [
+        let mut virtio = vec![
             VirtioSlot { addr: VIRTIO_BLK_MMIO_ADDR, size: VIRTIO_MMIO_SIZE as u32, gsi: VIRTIO_BLK_IRQ },
             VirtioSlot { addr: VIRTIO_NET_MMIO_ADDR, size: VIRTIO_MMIO_SIZE as u32, gsi: VIRTIO_NET_IRQ }
         ];
+        if config.balloon {
+            virtio.push(VirtioSlot { addr: VIRTIO_BALLOON_MMIO_ADDR, size: VIRTIO_MMIO_SIZE as u32, gsi: VIRTIO_BALLOON_IRQ });
+        }
         let rsdp_paddr = write_acpi_tables(&mut region.allocators[acpi_alloc], config.cpus, &platform, &virtio)?;
 
         let mut modlist_entries = vec![];

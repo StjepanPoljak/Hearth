@@ -20,11 +20,13 @@ mod queue;
 mod mmio;
 mod blk;
 mod net;
+mod balloon;
 
 pub use queue::*;
 pub use mmio::*;
 pub use blk::*;
 pub use net::*;
+pub use balloon::*;
 
 impl VM {
     /* Without a disk the slot still answers, as an empty one: the
@@ -38,6 +40,13 @@ impl VM {
             None => self.add_mmio_device(addr, VIRTIO_MMIO_SIZE, VirtioPlaceholder::new())
         }
         Ok(())
+    }
+
+    /* Only with --balloon: unlike disk and network slots, the guest is
+     * told about this one only when it is there. */
+    pub fn init_virtio_balloon(&mut self, addr: u64, irq: u32) {
+        let balloon = VirtioMmio::new(VirtioBalloon::new(), self.fd, irq);
+        self.add_mmio_device(addr, VIRTIO_MMIO_SIZE, balloon);
     }
 
     pub fn init_virtio_net(&mut self, config: &VmConfig, addr: u64, irq: u32) -> Result<()> {

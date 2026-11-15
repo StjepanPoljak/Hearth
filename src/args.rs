@@ -58,6 +58,12 @@ pub struct Args {
     #[arg(long)]
     tap: Option<String>,
 
+    /// Give the guest a virtio-balloon with free page reporting: the RAM
+    /// it frees goes back to the host, rather than staying Hearth's for
+    /// good. The guest kernel needs CONFIG_VIRTIO_BALLOON (x86 only)
+    #[arg(long)]
+    balloon: bool,
+
     /// Kernel command line arguments (on x86 extra ones; on riscv64 the
     /// device tree's bootargs, unless --dtb is given; on aarch64 the DTB
     /// has them)
@@ -110,6 +116,9 @@ impl Args {
             }
         }
         set!(name, binary, linux, memory, dtb, initramfs, append, disk, tap, vnc);
+        if self.balloon {
+            config.balloon = true;
+        }
         if let Some(cpus) = self.cpus {
             config.cpus = cpus;
         }

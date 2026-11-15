@@ -33,6 +33,8 @@ pub struct VmConfig {
     pub append: Option<String>,
     pub disk: Option<DiskConfig>,
     pub tap: Option<String>,
+    /* A virtio-balloon with free page reporting (x86 only so far). */
+    pub balloon: bool,
     pub vnc: Option<String>,
     /* Written as for --serial, e.g. "pty" or "unix:/tmp/vm.sock". */
     #[serde(deserialize_with = "de_serial")]
@@ -53,6 +55,7 @@ impl Default for VmConfig {
             append: None,
             disk: None,
             tap: None,
+            balloon: false,
             vnc: None,
             serial: SerialSpec::Stdio
         }
@@ -82,6 +85,9 @@ impl VmConfig {
             _ => ()
         }
         check_range("cpus", self.cpus, 1, MAX_CPUS)?;
+        if self.balloon && !cfg!(target_arch = "x86_64") {
+            return Err("balloon is x86 only so far".into());
+        }
         if let Some(memory) = self.memory {
             /* KVM maps guest memory in whole host pages. */
             let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
@@ -250,6 +256,7 @@ mod tests {
             serial = "unix:/tmp/web1.sock"
             tap = "tap0"
             cpus = 1
+            balloon = true
 
             [disk]
             path = "rootfs.img"
@@ -260,6 +267,7 @@ mod tests {
         assert_eq!(config.linux.as_deref(), Some("vmlinux"));
         assert_eq!(config.memory, Some(512 << 20));
         assert_eq!(config.cpus, 1);
+        assert!(config.balloon);
         assert_eq!(config.load_addr, DEFAULT_LOAD_ADDR);
         assert!(matches!(config.serial, SerialSpec::Unix(ref p) if p == "/tmp/web1.sock"));
         assert_eq!(config.disk, Some(disk("rootfs.img", 256, Some(126))));
