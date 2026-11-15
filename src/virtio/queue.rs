@@ -3,7 +3,8 @@ use crate::{ GuestError, GuestMemory, gpa_to_host, read_guest_ptr, write_guest_p
 use crate::virtio_bindings::*;
 use std::sync::atomic::{ Ordering, fence };
 
-pub const VRING_QUEUES_MAX: usize = 2;
+/* virtio-balloon's inflate, deflate and reporting queues. */
+pub const VRING_QUEUES_MAX: usize = 3;
 
 pub enum DescType {
     WRITE,
