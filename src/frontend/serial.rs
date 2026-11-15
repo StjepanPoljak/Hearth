@@ -40,19 +40,24 @@ pub fn parse_serial(arg: &str) -> Result<SerialSpec, String> {
 
 /* The guest's output, shared by the UART and the thread that connects
  * clients. A client that stops reading must not stall the vcpu, so pty
- * and socket writes don't block: what doesn't fit is dropped, as on a
- * line with nobody listening. A socket without a client keeps the last
- * BACKLOG bytes for the next one, so attaching late still shows the boot. */
+ * and socket writes don't block. What the client hasn't taken yet waits
+ * in `pending`, in order, and goes out as it reads: writes and the
+ * client's thread flush it. Only past PENDING_MAX, when the client has
+ * stopped reading, is the oldest output dropped, as on a line with
+ * nobody listening. A socket without a client keeps the last BACKLOG
+ * bytes for the next one, so attaching late still shows the boot. */
 #[derive(Clone, Default)]
 pub struct SerialOut(Arc<Mutex<SerialSink>>);
 
 #[derive(Default)]
 struct SerialSink {
     out: Option<Box<dyn Write + Send>>,
+    pending: VecDeque<u8>,
     backlog: Option<VecDeque<u8>>
 }
 
 const BACKLOG: usize = 64 << 10;
+const PENDING_MAX: usize = 1 << 20;
 
 impl SerialOut {
     fn keep_backlog(&self) {
@@ -68,23 +73,61 @@ impl SerialOut {
         }
     }
 
+    /* Output not yet sent goes to the backlog, for the next client. */
     fn disconnect(&self) {
-        self.0.lock().unwrap().out = None;
+        let mut sink = self.0.lock().unwrap();
+        sink.out = None;
+        let pending: Vec<u8> = sink.pending.drain(..).collect();
+        sink.keep(&pending);
     }
 
     pub fn write(&self, bytes: &[u8]) {
         self.0.lock().unwrap().write(bytes);
     }
+
+    /* Sends what is pending, as far as the client takes it; true if
+     * some is left. */
+    fn flush(&self) -> bool {
+        let mut sink = self.0.lock().unwrap();
+        sink.flush();
+        !sink.pending.is_empty()
+    }
 }
 
 impl SerialSink {
     fn write(&mut self, bytes: &[u8]) {
-        if let Some(w) = self.out.as_mut() {
-            match w.write_all(bytes).and_then(|_| w.flush()) {
-                Err(e) if e.kind() != io::ErrorKind::WouldBlock => self.out = None,
-                _ => return
+        if self.out.is_none() {
+            self.keep(bytes);
+            return;
+        }
+        self.pending.extend(bytes);
+        let excess = self.pending.len().saturating_sub(PENDING_MAX);
+        self.pending.drain(..excess);
+        self.flush();
+    }
+
+    fn flush(&mut self) {
+        let Some(w) = self.out.as_mut() else { return };
+        while !self.pending.is_empty() {
+            let (chunk, _) = self.pending.as_slices();
+            match w.write(chunk) {
+                Ok(0) => break,
+                Ok(n) => { self.pending.drain(..n); },
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => (),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                /* The client went away; its thread sees that too. */
+                Err(_) => {
+                    self.out = None;
+                    let pending: Vec<u8> = self.pending.drain(..).collect();
+                    self.keep(&pending);
+                    return;
+                }
             }
         }
+        let _ = w.flush();
+    }
+
+    fn keep(&mut self, bytes: &[u8]) {
         if let Some(backlog) = self.backlog.as_mut() {
             backlog.extend(bytes);
             let excess = backlog.len().saturating_sub(BACKLOG);
@@ -115,7 +158,8 @@ pub fn start_serial(spec: &SerialSpec, uart: Arc<Mutex<dyn TTY>>, control: Arc<V
             let (master, path) = open_pty()?;
             println!("Serial console on {}\r", path);
             out.connect(Box::new(master.try_clone()?));
-            std::thread::spawn(move || feed(master, &uart));
+            let out = out.clone();
+            std::thread::spawn(move || feed(master, &uart, &out));
         }
         SerialSpec::File(path) => {
             let file = OpenOptions::new().create(true).append(true).open(path)
@@ -137,7 +181,7 @@ pub fn start_serial(spec: &SerialSpec, uart: Arc<Mutex<dyn TTY>>, control: Arc<V
                     let Ok(client) = client else { continue };
                     let (Ok(()), Ok(writer)) = (client.set_nonblocking(true), client.try_clone()) else { continue };
                     out.connect(Box::new(writer));
-                    feed(client, &uart);
+                    feed(client, &uart, &out);
                     out.disconnect();
                 }
             });
@@ -147,12 +191,18 @@ pub fn start_serial(spec: &SerialSpec, uart: Arc<Mutex<dyn TTY>>, control: Arc<V
 }
 
 /* Passes what `input` reads to the guest until it hits end of file. The
- * fd may be non-blocking, so it waits with poll(). */
-fn feed(mut input: impl Read + AsRawFd, uart: &Arc<Mutex<dyn TTY>>) {
+ * fd may be non-blocking, so it waits with poll(). It is also the
+ * client's output: while some is pending, it waits for the client to
+ * take more, and every FLUSH_MS at most, as the vcpu may have queued
+ * more since it looked. */
+fn feed(mut input: impl Read + AsRawFd, uart: &Arc<Mutex<dyn TTY>>, out: &SerialOut) {
+    const FLUSH_MS: libc::c_int = 50;
     let mut buf = [0u8; 256];
     loop {
-        let mut pfd = libc::pollfd { fd: input.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-        if unsafe { libc::poll(&mut pfd, 1, -1) } < 0 {
+        let pending = out.flush();
+        let events = libc::POLLIN | if pending { libc::POLLOUT } else { 0 };
+        let mut pfd = libc::pollfd { fd: input.as_raw_fd(), events, revents: 0 };
+        if unsafe { libc::poll(&mut pfd, 1, FLUSH_MS) } < 0 {
             if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
                 continue;
             }
@@ -235,4 +285,83 @@ fn start_tty(uart_async: Arc<Mutex<dyn TTY>>, control: Arc<VmControl>) {
             control.stop(if quit { VmExit::Quit } else { VmExit::TerminalClosed });
         }
     });
+}
+
+#[cfg(test)]
+mod serial_tests {
+    use super::*;
+
+    /* A client socket that takes at most `room` bytes before it would
+     * block, until the test drains it, as a slow reader would. */
+    struct SlowClient {
+        got: Arc<Mutex<Vec<u8>>>,
+        room: Arc<Mutex<usize>>,
+        gone: bool
+    }
+
+    impl Write for SlowClient {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.gone {
+                return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+            }
+            let mut room = self.room.lock().unwrap();
+            if *room == 0 {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            }
+            let n = buf.len().min(*room);
+            *room -= n;
+            self.got.lock().unwrap().extend_from_slice(&buf[..n]);
+            Ok(n)
+        }
+        fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    }
+
+    fn slow_client(room: usize, gone: bool) -> (Box<SlowClient>, Arc<Mutex<Vec<u8>>>, Arc<Mutex<usize>>) {
+        let got = Arc::new(Mutex::new(vec![]));
+        let room = Arc::new(Mutex::new(room));
+        (Box::new(SlowClient { got: got.clone(), room: room.clone(), gone }), got, room)
+    }
+
+    #[test]
+    fn a_slow_client_gets_everything_in_order() {
+        let out = SerialOut::default();
+        let (client, got, room) = slow_client(10, false);
+        out.connect(client);
+        let data: Vec<u8> = (0..5000u32).map(|i| (i % 251) as u8).collect();
+        for chunk in data.chunks(7) {
+            out.write(chunk);
+        }
+        assert_eq!(got.lock().unwrap().len(), 10);
+        /* The client reads; flushes send the rest. */
+        while out.flush() {
+            *room.lock().unwrap() += 100;
+        }
+        assert_eq!(*got.lock().unwrap(), data);
+    }
+
+    #[test]
+    fn a_client_that_stops_reading_costs_at_most_pending_max() {
+        let out = SerialOut::default();
+        let (client, got, room) = slow_client(0, false);
+        out.connect(client);
+        let block = vec![b'x'; 64 << 10];
+        for _ in 0..(PENDING_MAX / block.len() + 4) {
+            out.write(&block);
+        }
+        *room.lock().unwrap() = usize::MAX;
+        out.flush();
+        assert_eq!(got.lock().unwrap().len(), PENDING_MAX);
+    }
+
+    #[test]
+    fn output_for_a_client_that_went_away_goes_to_the_backlog() {
+        let out = SerialOut::default();
+        out.keep_backlog();
+        let (client, _, _) = slow_client(0, true);
+        out.connect(client);
+        out.write(b"lost?");
+        let (next, got, _) = slow_client(usize::MAX, false);
+        out.connect(next);
+        assert_eq!(*got.lock().unwrap(), b"lost?");
+    }
 }
