@@ -7,6 +7,8 @@
 #
 #   docker save nginx:1.30.6-alpine \
 #       -o guests/k3s/rootfs/var/lib/rancher/k3s/agent/images/workloads.tar
+#   # For the Emularium boards (emularium/), save emularium:1 with it,
+#   # built as emularium/Dockerfile says: docker save nginx:1.30.6-alpine emularium:1 ...
 #   docker build -t hearth-k3s guests/k3s     # DOCKER_BUILDKIT=0 without buildx
 #   C=$(docker create hearth-k3s)
 #   docker export $C > build/k3s.tar && docker rm $C

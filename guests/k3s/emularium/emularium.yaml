@@ -1,0 +1,108 @@
+# Emularium boards as a service: each pod of the StatefulSet runs one
+# Tetris board, and each gets its own NodePort, so each user connects a
+# VNC viewer to their own board: 192.168.100.2:30900, :30901, :30902.
+#
+# Emularium serves VNC on 127.0.0.1:5900 only, as it has no password. The
+# pod's second container, a sidecar running socat, listens on 5901 on
+# the pod's address and forwards to it: containers in a pod share their
+# network namespace, so the sidecar reaches Emularium's localhost.
+# Anyone who can reach a NodePort can use that board.
+apiVersion: v1
+kind: Service
+metadata:
+  name: emularium
+spec:
+  clusterIP: None              # the StatefulSet's own, for stable pod names
+  selector:
+    app: emularium
+  ports:
+    - name: vnc
+      port: 5901
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: emularium
+spec:
+  serviceName: emularium
+  replicas: 3
+  selector:
+    matchLabels:
+      app: emularium
+  template:
+    metadata:
+      labels:
+        app: emularium
+    spec:
+      containers:
+        - name: emularium
+          image: emularium:1
+          imagePullPolicy: Never
+          # A board simulates its PIC in real time: about a third of a
+          # core each, measured with no viewer connected.
+          resources:
+            requests:
+              cpu: 350m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          # The VNC port answers once the board runs. Probes come from the
+          # kubelet to the pod's address, which Emularium doesn't listen
+          # on, so this one connects from inside the container.
+          readinessProbe:
+            exec:
+              command: ["socat", "-u", "/dev/null", "TCP:127.0.0.1:5900"]
+            periodSeconds: 5
+        - name: vnc-proxy
+          image: emularium:1
+          imagePullPolicy: Never
+          command: ["socat", "TCP-LISTEN:5901,fork,reuseaddr", "TCP:127.0.0.1:5900"]
+          ports:
+            - name: vnc
+              containerPort: 5901
+          resources:
+            requests:
+              cpu: 10m
+              memory: 4Mi
+            limits:
+              memory: 32Mi
+---
+# One NodePort per board, chosen by the pod name the StatefulSet gives it.
+apiVersion: v1
+kind: Service
+metadata:
+  name: emularium-0
+spec:
+  type: NodePort
+  selector:
+    statefulset.kubernetes.io/pod-name: emularium-0
+  ports:
+    - port: 5901
+      targetPort: vnc
+      nodePort: 30900
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emularium-1
+spec:
+  type: NodePort
+  selector:
+    statefulset.kubernetes.io/pod-name: emularium-1
+  ports:
+    - port: 5901
+      targetPort: vnc
+      nodePort: 30901
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emularium-2
+spec:
+  type: NodePort
+  selector:
+    statefulset.kubernetes.io/pod-name: emularium-2
+  ports:
+    - port: 5901
+      targetPort: vnc
+      nodePort: 30902
