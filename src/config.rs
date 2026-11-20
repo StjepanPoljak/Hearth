@@ -151,7 +151,11 @@ pub struct DiskConfig {
     #[serde(default = "default_blk_queue_size")]
     pub queue_size: u32,
     /* Data segments per request, offered with VIRTIO_BLK_F_SEG_MAX. */
-    pub seg_max: Option<u32>
+    pub seg_max: Option<u32>,
+    /* Leave the image as it is: the guest's writes go to a temporary
+     * overlay, dropped when the VM stops. */
+    #[serde(default)]
+    pub overlay: bool
 }
 
 fn default_blk_queue_size() -> u32 { DEFAULT_BLK_QUEUE_SIZE }
@@ -177,14 +181,22 @@ fn check_range(key: &str, n: u32, min: u32, max: u32) -> Result<(), String> {
     }
 }
 
-/* --disk PATH[,queue_size=N][,seg_max=N], or path=PATH anywhere in the
- * list. A path with a comma can't be given; one with '=' needs path=. */
+/* --disk PATH[,queue_size=N][,seg_max=N][,overlay], or path=PATH
+ * anywhere in the list. A path with a comma can't be given; one with '='
+ * needs path=. */
 pub fn parse_disk(arg: &str) -> Result<DiskConfig, String> {
     let mut path = None;
     let mut queue_size = None;
     let mut seg_max = None;
+    let mut overlay = false;
 
     for (i, item) in arg.split(',').enumerate() {
+        if i > 0 && item == "overlay" {
+            if std::mem::replace(&mut overlay, true) {
+                return Err("overlay given more than once".into());
+            }
+            continue;
+        }
         let (key, value) = match item.split_once('=') {
             Some(kv) => kv,
             None if i == 0 && !item.is_empty() => ("path", item),
@@ -194,7 +206,8 @@ pub fn parse_disk(arg: &str) -> Result<DiskConfig, String> {
             "path" => path.replace(value.to_string()).is_some(),
             "queue_size" => queue_size.replace(parse_u32(key, value)?).is_some(),
             "seg_max" => seg_max.replace(parse_u32(key, value)?).is_some(),
-            _ => return Err(format!("unknown key '{}' (known: path, queue_size, seg_max)", key))
+            "overlay" => return Err("overlay takes no value".into()),
+            _ => return Err(format!("unknown key '{}' (known: path, queue_size, seg_max, overlay)", key))
         };
         if seen {
             return Err(format!("{} given more than once", key));
@@ -204,7 +217,8 @@ pub fn parse_disk(arg: &str) -> Result<DiskConfig, String> {
     let disk = DiskConfig {
         path: path.unwrap_or_default(),
         queue_size: queue_size.unwrap_or(DEFAULT_BLK_QUEUE_SIZE),
-        seg_max
+        seg_max,
+        overlay
     };
     disk.validate()?;
     Ok(disk)
@@ -220,7 +234,7 @@ mod tests {
     use super::*;
 
     fn disk(path: &str, queue_size: u32, seg_max: Option<u32>) -> DiskConfig {
-        DiskConfig { path: path.to_string(), queue_size, seg_max }
+        DiskConfig { path: path.to_string(), queue_size, seg_max, overlay: false }
     }
 
     #[test]
@@ -234,6 +248,17 @@ mod tests {
                    Ok(disk("rootfs.img", 256, Some(126))));
         assert_eq!(parse_disk("seg_max=0x10,path=/a=b.img"),
                    Ok(disk("/a=b.img", DEFAULT_BLK_QUEUE_SIZE, Some(16))));
+    }
+
+    #[test]
+    fn overlay() {
+        let mut want = disk("rootfs.img", DEFAULT_BLK_QUEUE_SIZE, None);
+        want.overlay = true;
+        assert_eq!(parse_disk("rootfs.img,overlay"), Ok(want.clone()));
+        /* First, a bare word is the path. */
+        for bad in ["overlay,path=a.img", "a.img,overlay,overlay", "a.img,overlay=yes", "a.img,overlay="] {
+            assert!(parse_disk(bad).is_err(), "accepted {:?}", bad);
+        }
     }
 
     #[test]

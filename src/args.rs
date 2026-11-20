@@ -43,14 +43,17 @@ pub struct Args {
     initramfs: Option<String>,
 
     /// Disk image, with optional virtio-blk settings after it:
-    /// PATH[,queue_size=N][,seg_max=N]. queue_size is the request queue
+    /// PATH[,queue_size=N][,seg_max=N][,overlay]. queue_size is the request queue
     /// size, offered as QueueNumMax [default: 128]; split rings must be a
     /// power of 2, and Linux refuses other sizes. seg_max offers
     /// VIRTIO_BLK_F_SEG_MAX with this many data segments per request
     /// [default: not offered, the guest uses 1]. Without indirect
     /// descriptors a request takes seg_max + 2 ring entries, so keep
     /// seg_max <= queue_size - 2 or the guest can build requests that
-    /// never fit
+    /// never fit. overlay leaves the image as it is: the guest's writes go
+    /// to a temporary file next to it, dropped when the VM stops, and any
+    /// number of VMs with overlays can share the image. Without it, Hearth locks
+    /// the image for itself
     #[arg(long, value_parser = parse_disk, value_name = "PATH[,KEY=VALUE...]")]
     disk: Option<DiskConfig>,
 

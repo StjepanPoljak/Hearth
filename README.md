@@ -53,6 +53,12 @@ target/debug/hearth --kernel vmlinux --disk rootfs.img
 Disk settings go after the path, e.g.
 `--disk rootfs.img,queue_size=256,seg_max=126` (see `--help`).
 
+Hearth locks the image while the VM runs, so a second VM can't write to it
+at the same time. With `--disk rootfs.img,overlay` the image stays as it
+is: the guest's writes go to a temporary file next to it, gone when the VM
+stops, so every boot starts from the same image, and any number of
+VMs with overlays can share it.
+
 The same settings can live in a TOML file, given with `--config vm.toml`.
 Each flag `--foo X` is `foo = X` there, and `--disk`'s settings go in a
 `[disk]` table; flags on the command line override the file. Relative paths
