@@ -1,0 +1,11 @@
+# The node and the API server on eth0.
+node-ip: 192.168.100.2
+advertise-address: 192.168.100.2
+tls-san:
+  - 192.168.100.2
+# ServiceLB runs iptables-legacy in its pods, and the guest kernel has
+# only nftables; traefik's Service is its LoadBalancer.
+# NodePort Services reach the node from the host as they are.
+disable:
+  - traefik
+  - servicelb

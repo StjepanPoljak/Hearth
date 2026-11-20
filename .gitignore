@@ -7,3 +7,4 @@
 .rustup
 /build
 /vms
+/guests/k3s/rootfs/var/lib/rancher/k3s/agent/images/workloads.tar
