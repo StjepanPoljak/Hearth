@@ -37,8 +37,10 @@ devices, e.g. to 1G where Linux's RAM is, with the load address following it.
 ## Emularium sessions in k3s
 
 Done (`guests/k3s/emularium/`): a session pod per user, with Emularium's
-schematic editor, firmware upload, Run and the board's display in the
-browser, and a hub that creates, caps and ends sessions. What's left:
+schematic editor, firmware upload to the selected part, Run and Stop, the
+board's display and Emularium's debugger (pause, step, breakpoints, a
+disassembly around the PC) in the browser, and a hub that creates, caps
+and ends sessions. What's left:
 
 - **Accounts**: a session belongs to whoever has its address, and anyone
   who reaches the hub can start and end sessions.
@@ -49,4 +51,6 @@ browser, and a hub that creates, caps and ends sessions. What's left:
   front's proxying.
 - **Assembling in the session**: Alpine has no PIC assembler (`gputils`).
 - **The UART and VCD traces** in the page.
+- **More of the debugger in the page**: data memory (`x`), step over a
+  CALL, and source lines from a `.lst`/`.cod` uploaded with the HEX.
 - **Keeping a session**: it goes with its pod; Download is the only way out.

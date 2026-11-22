@@ -7,11 +7,20 @@ emulator loop (emulator-loop) runs Emularium on it, and this server ties
 them together for the browser:
 
   /session/            the page: the editor beside the board's display
-  /session/status      JSON: the template, whether Emularium runs, its log
-  /session/run         POST: restart Emularium on the saved board
-  /session/firmware    POST: the body, an Intel HEX file, as the PIC's ROM
+  /session/status      JSON: the template, whether Emularium runs, its log,
+                       and the debugger's status while it runs
+  /session/parts       JSON: the saved board's parts, and the file each
+                       takes (an MCU's firmware, a memory's image)
+  /session/run         POST: restart Emularium on the saved board;
+                       ?paused=1 keeps it stopped at the start
+  /session/stop        POST: end Emularium until the next Run
+  /session/debug       POST: the body, a command line for Emularium's
+                       debugger; its JSON answer
+  /session/firmware    ?part=P: GET the file part P takes; POST the body
+                       as that file (Intel HEX for an MCU), and restart
   /session/template    POST ?name=T: start over from boards/T
-  /session/download    the board, its layout and firmware, as a zip
+  /session/download    the board, its layout and the files its parts take,
+                       as a zip
   /session/idle        seconds since the last request, for the hub; it
                        doesn't count as one itself
   /novnc/...           noVNC, the VNC client in the page
@@ -33,6 +42,7 @@ import socket
 import sys
 import threading
 import time
+import tomllib
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -43,6 +53,7 @@ NOVNC = os.environ.get("NOVNC", "/usr/share/novnc")
 HERE = os.path.dirname(os.path.abspath(__file__))
 EDITOR = ("127.0.0.1", 8001)
 WEBSOCKIFY = ("127.0.0.1", 6080)
+DEBUGGER = ("127.0.0.1", 3333)
 LOG_TAIL = 200
 MAX_UPLOAD = 1 << 20
 last_use = time.monotonic()
@@ -54,6 +65,15 @@ TEMPLATES = {
 }
 ROM = re.compile(r'rom\s*=\s*"[^"]*"')
 
+# Models whose parts take a file, the parameter naming it, and what it is;
+# and the models the debugger knows as MCUs.
+FILE_PARAMS = {"PIC16F876": ("rom", "firmware (Intel HEX)"),
+               "25LC1024": ("image", "image (raw bytes)")}
+MCUS = {"PIC16F876"}
+# Files of the session itself, which a part's file mustn't be.
+OWN = {"board.toml", "board.layout.toml", "board.svg", "template", "breakpoints",
+       "emulator.log", "emulator.state"}
+
 
 def path(name):
     return os.path.join(WORK, name)
@@ -61,7 +81,7 @@ def path(name):
 
 def use_template(name):
     """Replaces the board, its layout and firmware with a template's, its
-    PIC's ROM renamed to firmware.hex, the file uploads replace."""
+    PIC's ROM renamed to firmware.hex, and drops the breakpoints."""
     board, rom = TEMPLATES[name]
     src = os.path.join(BOARDS, board)
     with open(src) as f:
@@ -78,6 +98,8 @@ def use_template(name):
     shutil.copy(os.path.join(os.path.dirname(src), rom), path("firmware.hex"))
     with open(path("template"), "w") as f:
         f.write(name)
+    if os.path.exists(path("breakpoints")):
+        os.remove(path("breakpoints"))
 
 
 def valid_hex(data):
@@ -100,8 +122,83 @@ def valid_hex(data):
     return None
 
 
-def request_run():
-    open(path(".restart"), "w").close()
+def request_run(paused=False):
+    prune_breakpoints()
+    with open(path(".restart"), "w") as f:
+        f.write("paused" if paused else "")
+
+
+def parts():
+    """The saved board's parts: name -> {model, param, what, file}, the
+    last three for parts that take a file (file None when it names none,
+    or one that isn't a plain file of the session)."""
+    try:
+        with open(path("board.toml"), "rb") as f:
+            board = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    out = {}
+    for name, p in (board.get("parts") or {}).items():
+        if not isinstance(p, dict):
+            continue
+        model = str(p.get("model", ""))
+        part = {"model": model, "mcu": model in MCUS}
+        if model in FILE_PARAMS:
+            param, what = FILE_PARAMS[model]
+            f = p.get(param)
+            ok = isinstance(f, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", f) and f not in OWN
+            part.update(param=param, what=what, file=f if ok else None)
+        out[name] = part
+    return out
+
+
+def read_breakpoints():
+    try:
+        with open(path("breakpoints")) as f:
+            return [tuple(l.split()) for l in f if len(l.split()) == 2]
+    except OSError:
+        return []
+
+
+def write_breakpoints(bps):
+    with open(path("breakpoints.tmp"), "w") as f:
+        f.writelines(f"{d} {a}\n" for d, a in bps)
+    os.replace(path("breakpoints.tmp"), path("breakpoints"))
+
+
+def prune_breakpoints():
+    """Drops the breakpoints of MCUs the saved board no longer has, which
+    Emularium would refuse to start with."""
+    mcus = {n for n, p in parts().items() if p["mcu"]}
+    bps = read_breakpoints()
+    if any(d not in mcus for d, _ in bps):
+        write_breakpoints([(d, a) for d, a in bps if d in mcus])
+
+
+def debug(line, timeout=5):
+    """Sends a command to Emularium's debugger; its answer, parsed, or
+    None when Emularium isn't running. The breakpoints it reports are kept
+    for the next run."""
+    try:
+        with socket.create_connection(DEBUGGER, timeout=timeout) as s:
+            s.sendall(line.encode() + b"\n")
+            buf = b""
+            while not buf.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    return None
+                buf += chunk
+    except OSError:
+        return None
+    try:
+        answer = json.loads(buf)
+    except ValueError:
+        return None
+    if "devices" in answer:
+        bps = [(d["name"], hex(a)) for d in answer["devices"] for a in d["breakpoints"]]
+        if bps != read_breakpoints():
+            write_breakpoints(bps)
+    return answer
 
 
 def status():
@@ -112,7 +209,9 @@ def status():
         except OSError:
             return default
     log = read("emulator.log").splitlines()[-LOG_TAIL:]
-    return {"template": read("template").strip(), "state": read("emulator.state").strip(),
+    state = read("emulator.state").strip()
+    return {"template": read("template").strip(), "state": state,
+            "debug": debug("status", 1) if state.startswith("running") else None,
             "log": "\n".join(log)}
 
 
@@ -156,13 +255,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, f.read(), "text/html; charset=utf-8")
         if url.path == "/session/status":
             return self.reply(200, json.dumps(status()), "application/json")
+        if url.path == "/session/parts":
+            return self.reply(200, json.dumps(parts()), "application/json")
+        if url.path == "/session/firmware":
+            try:
+                _, p = self.part_file(url)
+                with open(path(p["file"]), "rb") as f:
+                    return self.reply(200, f.read(), "application/octet-stream")
+            except (OSError, ValueError) as e:
+                return self.reply(404, str(e))
         if url.path == "/session/templates":
             return self.reply(200, json.dumps(sorted(TEMPLATES)), "application/json")
         if url.path == "/session/download":
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                for name in ("board.toml", "board.layout.toml", "firmware.hex", "board.svg"):
-                    if os.path.exists(path(name)):
+                files = ["board.toml", "board.layout.toml", "board.svg"]
+                files += sorted({p["file"] for p in parts().values() if p.get("file")})
+                for name in files:
+                    if os.path.isfile(path(name)):
                         z.write(path(name), "board/" + name)
             return self.reply(200, buf.getvalue(), "application/zip",
                               [("Content-Disposition", 'attachment; filename="board.zip"')])
@@ -177,17 +287,32 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == "/session/run":
                 self.body()
-                request_run()
+                request_run(parse_qs(url.query).get("paused") == ["1"])
                 return self.reply(200, "ok")
+            if url.path == "/session/stop":
+                self.body()
+                open(path(".stop"), "w").close()
+                return self.reply(200, "ok")
+            if url.path == "/session/debug":
+                line = self.body().decode("utf-8", "replace").strip()
+                if not line or "\n" in line:
+                    return self.reply(400, "One command line, please.")
+                answer = debug(line)
+                if answer is None:
+                    return self.reply(409, "Emularium isn't running: press Run.")
+                return self.reply(200, json.dumps(answer), "application/json")
             if url.path == "/session/firmware":
+                name, p = self.part_file(url)
                 data = self.body()
-                err = valid_hex(data)
-                if err:
-                    return self.reply(400, f"Not an Intel HEX file: {err}.")
-                with open(path("firmware.hex"), "wb") as f:
+                if p["mcu"]:
+                    err = valid_hex(data)
+                    if err:
+                        return self.reply(400, f"Not an Intel HEX file: {err}.")
+                with open(path(p["file"] + ".tmp"), "wb") as f:
                     f.write(data)
+                os.replace(path(p["file"] + ".tmp"), path(p["file"]))
                 request_run()
-                return self.reply(200, "ok")
+                return self.reply(200, f"{p['file']} ({name}'s {p['param']})")
             if url.path == "/session/template":
                 self.body()
                 name = parse_qs(url.query).get("name", [""])[0]
@@ -199,6 +324,20 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError) as e:
             return self.reply(400, str(e))
         self.proxy()
+
+    def part_file(self, url):
+        """The part ?part= names, and its entry in parts(), if it takes a
+        file; else a ValueError saying what's missing."""
+        name = parse_qs(url.query).get("part", [""])[0]
+        p = parts().get(name)
+        if p is None:
+            raise ValueError(f"The saved board has no part {name!r}: Save it in the editor first.")
+        if "param" not in p:
+            raise ValueError(f"{name} ({p['model']}) takes no file.")
+        if not p["file"]:
+            raise ValueError(f"{name} names no {p['param']} file: double-click it in the editor, "
+                             f"give it one (e.g. {name}.hex), and Save.")
+        return name, p
 
     def static(self, rel):
         full = os.path.realpath(os.path.join(NOVNC, rel))

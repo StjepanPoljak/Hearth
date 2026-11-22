@@ -1,26 +1,48 @@
 #!/bin/sh
 # Runs Emularium on /work/board.toml, its output in /work/emulator.log and
-# its state in /work/emulator.state for the session's page. The front's
-# Run creates /work/.restart, which restarts it; a board that stops by
-# itself, or doesn't load, waits for the next Run. The state counts the
-# runs, so that the page can tell a new run from the last one.
+# its state in /work/emulator.state for the session's page, with its
+# debugger on 127.0.0.1:3333 for the front. The front's Run creates
+# /work/.restart, which restarts it, stopped at the start if the file says
+# "paused"; its Stop creates /work/.stop, which ends it. A board that is
+# stopped, stops by itself or doesn't load waits for the next Run. The
+# breakpoints in /work/breakpoints ("U1 0x5a" lines, which the front
+# keeps) are set again on each run. The state counts the runs, so that the
+# page can tell a new run from the last one.
 cd "${WORK:-/work}" || exit 1
 run=0
+wait_run() {
+    while [ ! -e .restart ]; do sleep 0.3; done
+}
 while true; do
-    rm -f .restart
+    mode=$(cat .restart 2>/dev/null)
+    rm -f .restart .stop
     run=$((run + 1))
+    set --
+    [ "$mode" = paused ] && set -- --paused
+    if [ -f breakpoints ]; then
+        while read -r dev addr; do
+            [ -n "$addr" ] && set -- "$@" --break "$dev:$addr"
+        done < breakpoints
+    fi
     echo "running $run" > emulator.state
-    emularium board.toml > emulator.log 2>&1 &
+    emularium board.toml --debug=3333 "$@" > emulator.log 2>&1 &
     pid=$!
-    while [ ! -e .restart ] && kill -0 $pid 2>/dev/null; do sleep 0.3; done
+    while [ ! -e .restart ] && [ ! -e .stop ] && kill -0 $pid 2>/dev/null; do sleep 0.3; done
     if [ -e .restart ]; then
         kill $pid 2>/dev/null
         wait $pid
+    elif [ -e .stop ]; then
+        kill $pid 2>/dev/null
+        wait $pid
+        rm -f .stop
+        echo "[Stopped. Press Run to start it again.]" >> emulator.log
+        echo "stopped $run stop" > emulator.state
+        wait_run
     else
         wait $pid
         status=$?
         echo "[Emularium stopped, status $status. Press Run to start it again.]" >> emulator.log
         echo "stopped $run $status" > emulator.state
-        while [ ! -e .restart ]; do sleep 0.3; done
+        wait_run
     fi
 done

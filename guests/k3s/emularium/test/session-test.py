@@ -1,7 +1,9 @@
 """Tests an Emularium session the way its page uses it, from outside:
-upload, Run, the schematic editor, templates, download, and the board's
-display over noVNC's WebSocket (wsvnc.py), checking each by what the board
-does. A key press and its result are read back from the display.
+upload to a part, Run and Stop, the debugger (pause, step, breakpoints
+kept across runs, starting paused), the schematic editor, templates,
+download, and the board's display over noVNC's WebSocket (wsvnc.py),
+checking each by what the board does. A key press and its result are read
+back from the display.
 
 Usage: session-test.py http://HOST:PORT EMULARIUM_DIR
   EMULARIUM_DIR, an Emularium checkout, for the Tetris and SPI RAM
@@ -52,11 +54,62 @@ spiram = open(os.path.join(EMULARIUM, "boards/spiram/spiram_test.hex"), "rb").re
 
 req("/session/run", b""); wait_running(); s_ = screen()
 ok(s_ == 17152, f"the Tetris template shows its title screen ({s_})")
-c, b = req("/session/firmware", b"hello\n"); ok(c == 400 and b"Intel HEX" in b, f"a file that isn't HEX is refused ({b.decode().strip()})")
-c, b = req("/session/firmware", tetris[:-3] + b"00\n"); ok(c == 400, f"a HEX with a bad checksum is refused ({b.decode().strip()})")
-c, _ = req("/session/firmware", spiram); wait_running(); s = screen()
-ok(c == 200 and s != 17152, f"other firmware, uploaded, runs on the board instead (lit pixels {s})")
-c, _ = req("/session/firmware", tetris); wait_running(); s_ = screen(); ok(c == 200 and s_ == 17152, f"uploading Tetris again brings its title back ({s_})")
+parts = json.loads(req("/session/parts")[1])
+ok(parts.get("U1", {}).get("file") == "firmware.hex" and parts["U1"]["mcu"] and "param" not in parts.get("J1", {"param": 1}),
+   f"the parts: U1, an MCU, takes firmware.hex; J1 takes nothing ({parts})")
+c, b = req("/session/firmware?part=U1"); ok(c == 200 and b == tetris, "U1's firmware reads back")
+F = "/session/firmware?part=U1"
+c, b = req("/session/firmware?part=J1", tetris); ok(c == 400 and b"takes no file" in b, f"firmware for the LCD is refused ({b.decode().strip()})")
+c, b = req("/session/firmware?part=U9", tetris); ok(c == 400 and b"no part" in b, f"firmware for a part the board hasn't is refused ({b.decode().strip()})")
+c, b = req("/session/firmware", tetris); ok(c == 400, f"firmware without a part is refused ({b.decode().strip()})")
+c, b = req(F, b"hello\n"); ok(c == 400 and b"Intel HEX" in b, f"a file that isn't HEX is refused ({b.decode().strip()})")
+c, b = req(F, tetris[:-3] + b"00\n"); ok(c == 400, f"a HEX with a bad checksum is refused ({b.decode().strip()})")
+c, b = req(F, spiram); wait_running(); s = screen()
+ok(c == 200 and s != 17152, f"other firmware, uploaded to U1, runs on the board instead (lit pixels {s}; {b.decode()})")
+c, _ = req(F, tetris); wait_running(); s_ = screen(); ok(c == 200 and s_ == 17152, f"uploading Tetris again brings its title back ({s_})")
+
+# Stop, and Run again.
+c, _ = req("/session/stop", b"")
+for _ in range(40):
+    st = json.loads(req("/session/status")[1])
+    if st["state"].startswith("stopped"): break
+    time.sleep(0.25)
+ok(st["state"].endswith(" stop") and st["debug"] is None, f"Stop ends the board ({st['state']})")
+c, b = req("/session/debug", b"status"); ok(c == 409, f"the debugger answers only while the board runs ({b.decode()})")
+req("/session/run", b""); wait_running(); ok(screen() == 17152, "Run starts it again")
+
+# The debugger.
+def dbg(line):
+    c, b = req("/session/debug", line.encode())
+    return json.loads(b) if c == 200 else {"error": b.decode()}
+d = dbg("pause")
+ok(d.get("state") == "stopped" and d.get("reason") == "pause", f"pause stops the board ({d})")
+time.sleep(0.5); d2 = dbg("status")
+ok(d2["time_ns"] == d["time_ns"], f"paused, the board's time stands still ({d['time_ns']} ns, {d2['time_ns']} ns)")
+pc, t = d["devices"][0]["pc"], d["time_ns"]
+d = dbg("step"); ok(d.get("reason") == "step" and 0 < d["time_ns"] - t <= 2000,
+                    f"step runs one instruction: PC {pc:#x} -> {d['devices'][0]['pc']:#x}, {d['time_ns'] - t} ns")
+d = dbg("step U1 50"); here = d["devices"][0]["pc"]
+d = dbg(f"break U1 {here:#x}"); ok(d.get("devices", [{}])[0].get("breakpoints") == [here], f"break U1 {here:#x}")
+d = dbg("continue")
+for _ in range(20):
+    d = dbg("status")
+    if d.get("state") == "stopped": break
+    time.sleep(0.2)
+ok(d.get("reason") == "breakpoint" and d["devices"][0]["pc"] == here, f"continue runs on to the breakpoint ({d.get('reason')}, PC {d['devices'][0]['pc']:#x})")
+d = dbg("bogus"); ok("error" in d, f"a bad command is an error ({d})")
+req("/session/run", b""); wait_running()
+for _ in range(20):
+    d = dbg("status")
+    if d.get("state") == "stopped": break
+    time.sleep(0.2)
+ok(d.get("reason") == "breakpoint" and d["devices"][0]["breakpoints"] == [here], f"the breakpoint is kept for the next run, which stops at it ({d.get('reason')})")
+d = dbg("delete"); d = dbg("continue"); s = screen("0x20")
+ok(d.get("state") == "running" and s != 17152, f"without it, the board goes on, and a key starts a game ({s})")
+req("/session/run?paused=1", b""); wait_running(); d = dbg("status")
+ok(d.get("reason") == "start" and d["devices"][0]["pc"] == 0 and d["time_ns"] == 0, f"Run paused stops at the first instruction ({d.get('reason')})")
+d = dbg("c"); s = [grab() for _ in range(20) if time.sleep(0.5) is None]
+ok(d.get("state") == "running" and 17152 in s, "and continue starts it: the title screen comes up")
 
 # The editor: save the board without the keypad's data-available net, as
 # deleting that connection in the editor would.
@@ -73,7 +126,7 @@ c, _ = req("/session/template?name=spiram", b""); wait_running(); st = json.load
 ok(c == 200 and st["template"] == "spiram", "switching to the SPI RAM template")
 print("      its output:", " | ".join(st["log"].splitlines()[-3:]))
 c, b = req("/session/download"); z = zipfile.ZipFile(io.BytesIO(b))
-ok(c == 200 and "board/board.toml" in z.namelist(), f"download: {z.namelist()}")
+ok(c == 200 and {"board/board.toml", "board/firmware.hex"} <= set(z.namelist()), f"download: {z.namelist()}")
 c, _ = req("/session/template?name=tetris", b""); wait_running(); s_ = screen(); ok(screen() == 17152, f"back to the Tetris template, title screen again ({s_})")
 
 # A board Emularium can't load, as the editor would save it after a part's

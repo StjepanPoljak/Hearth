@@ -22,15 +22,19 @@ them. They are for a trusted network, such as Hearth's host-only tap.
     │
     └──── :3xxxx ─────► session pod (session/session.yaml, made by the hub)
                          front.py      the pod's only port: the page, uploads,
-                                       Run, templates, download; passes the
-                                       rest through to the two below
+                                       Run and Stop, the debugger, templates,
+                                       download; passes the rest through to
+                                       the editor and websockify
                          schematic.py  Emularium's editor, on 127.0.0.1:8001
                          emulator-loop Emularium on /work/board.toml, VNC on
-                                       127.0.0.1:5900, restarted by Run
+                                       127.0.0.1:5900, its debugger on
+                                       127.0.0.1:3333; restarted by Run,
+                                       ended by Stop
                          websockify    127.0.0.1:6080, VNC over a WebSocket
                                        for noVNC in the page
                          /work         a scratch volume they share: the
-                                       board, its layout and firmware.hex
+                                       board, its layout, its parts' files
+                                       (firmware.hex) and breakpoints
 ```
 
 Emularium and its editor listen on 127.0.0.1 only, as they have no
@@ -44,15 +48,29 @@ A user's day with it:
 1. `http://192.168.100.2:30999/`, "New session" from a template (Tetris,
    or the SPI RAM test). The session is ready in about 3 s, and the hub
    opens it.
-2. The session's page: the schematic editor on the left, the board's
-   display (noVNC) and Emularium's output on the right. Keys typed in the
-   display go to the board's keypad.
-3. Change the board in the editor and Save (Ctrl+S); upload an Intel HEX
-   file for the PIC ("Upload firmware", checked before it's used); Run
-   restarts the board with both. A board Emularium can't load stops, with
-   its error in the output.
-4. Download takes the board file, its layout and firmware as a zip. Ending
-   the session, from the hub, deletes it all.
+2. The session's page: the schematic editor on the left; the board's
+   display (noVNC's client, in the page), the debugger and Emularium's
+   output on the right. Keys typed in the display go to the board's keypad.
+3. Change the board in the editor and Save (Ctrl+S). To upload firmware,
+   select its part in the editor: "Upload U1's rom…" replaces the file
+   that part's `rom` names (an MCU's is checked as Intel HEX first; a
+   25LC1024's `image` is taken as it is), and restarts the board. With
+   nothing selected, or a part that takes no file, the upload is off and
+   says why. Run restarts the board with the saved board and files, Stop
+   ends it. A board Emularium can't load stops, with its error in the
+   output.
+4. Pause (F8) stops the whole board, and Continue lets it go on. Step
+   (F10) runs one instruction of the debugger's MCU, and the rest of the
+   board along with it. The debugger shows that MCU's PC, W and STATUS,
+   and its firmware disassembled around the PC. Clicking a line sets a
+   breakpoint there, or removes it, and "Break" takes an address. A
+   breakpoint belongs to one MCU but stops the whole board. The front
+   keeps the breakpoints for the next Run, and "start paused" makes Run
+   stop at the first instruction. It's Emularium's own debugger
+   (`--debug`, see its README), reached through the front's
+   `/session/debug`.
+5. Download takes the board file, its layout and its parts' files as a
+   zip. Ending the session, from the hub, deletes it all.
 
 The hub ends sessions no page has used for 30 minutes (`IDLE_MINUTES`), or
 older than 8 hours (`MAX_HOURS`), and runs at most 4 at once
@@ -62,7 +80,9 @@ sessions, though its Role would let it delete any in the namespace.
 
 ## Building
 
-Both images build Emularium from its committed sources. From the
+Both images build Emularium from its committed sources (the session
+image needs the debugger, `--debug`, and the editor telling its page what
+is selected). From the
 repository root, with an Emularium checkout in `~/Projects/Emularium`:
 
 ```sh
@@ -102,23 +122,29 @@ for the fixed boards), and `http://192.168.100.2:30999/` in a browser.
 ## Tests
 
 `test/session-test.py URL EMULARIUM_DIR` tests one session from outside,
-the way its page uses it: a file that isn't Intel HEX, or has a bad
-checksum, is refused; other firmware, uploaded, runs instead of Tetris;
-a schematic saved through the editor runs after Run (without the keypad's
-data-available net, a key no longer starts the game); a board Emularium
-can't load is reported stopped, with its error; templates and download
-work. It reads the board's display and presses its keys over noVNC's
-WebSocket (`test/wsvnc.py`).
+the way its page uses it: firmware goes only to a part that takes a
+file, and a file that isn't Intel HEX, or has a bad checksum, is refused;
+other firmware, uploaded to U1, runs instead of Tetris; Stop ends the
+board and Run starts it again; the debugger pauses the whole board (its
+time stands still), steps one instruction, stops at a breakpoint, keeps
+it for the next run, and starts a run paused; a schematic saved through
+the editor runs after Run (without the keypad's data-available net, a
+key no longer starts the game); a board Emularium can't load is reported
+stopped, with its error; templates and download work. It reads the
+board's display and presses its keys over noVNC's WebSocket
+(`test/wsvnc.py`).
 
 `test/hub-test.py http://192.168.100.2:30999 EMULARIUM_DIR` tests the hub,
 and runs `session-test.py` on a session it creates: sessions are ready in
 about 3 s, a fifth is refused, a key pressed in one session changes only
 that one, deleting anything but a session is refused, and ending them
-leaves none. Both passed on a fresh boot of the k3s image on 2026-11-21.
+leaves none. Both passed on a fresh boot of the k3s image on 2026-11-22.
 Idle sessions were ended by the hub after `IDLE_MINUTES` (set to 1 for
 the test) while a polled one stayed; that isn't in the scripts, as it
-takes minutes. The page itself was checked by screenshots from headless
-Firefox: the editor, the connected display and the output.
+takes minutes. The page itself was checked in headless Firefox, driven
+over WebDriver: the display has no noVNC toolbar; upload is off until an
+MCU is selected in the editor; Pause, Step, a breakpoint set by clicking
+a listing line, Continue to it, Stop and Run.
 
 ## Not done
 

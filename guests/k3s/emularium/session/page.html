@@ -5,41 +5,69 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Emularium session</title>
 <style>
-  :root { --bg: #f6f6f4; --fg: #1d1d1b; --muted: #6b6b66; --line: #d9d9d4; --panel: #fff;
-          --accent: #2f6fdd; --ok: #2e8b57; --bad: #c0392b; }
+  :root { --bg: #f6f6f4; --fg: #1d1d1b; --muted: #6b6b66; --line: #d9d9d4; --panel: #fff; --hi: #fff4c2;
+          --accent: #2f6fdd; --ok: #2e8b57; --warn: #b7791f; --bad: #c0392b; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #18181a; --fg: #e8e8e4; --muted: #9a9a94; --line: #34343a; --panel: #212125;
-            --accent: #6d9cf0; --ok: #5cc28a; --bad: #e5675a; }
+    :root { --bg: #18181a; --fg: #e8e8e4; --muted: #9a9a94; --line: #34343a; --panel: #212125; --hi: #4a4120;
+            --accent: #6d9cf0; --ok: #5cc28a; --warn: #e0b050; --bad: #e5675a; }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
          font: 14px/1.4 system-ui, sans-serif; }
-  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px;
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px;
            border-bottom: 1px solid var(--line); }
   header b { font-size: 15px; margin-right: 4px; }
-  button, select, label.file { font: inherit; padding: 4px 10px; border: 1px solid var(--line);
-           border-radius: 6px; background: var(--panel); color: var(--fg); cursor: pointer; }
+  .group { display: flex; gap: 4px; align-items: center; }
+  button, select, label.file, input[type=text] { font: inherit; padding: 4px 10px; border: 1px solid var(--line);
+           border-radius: 6px; background: var(--panel); color: var(--fg); }
+  button, select, label.file { cursor: pointer; }
+  button:disabled, label.file.off { opacity: .45; cursor: default; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   label.file input { display: none; }
+  label.check { display: flex; gap: 4px; align-items: center; color: var(--muted); font-size: 13px; cursor: pointer; }
   #state { padding: 2px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--line); }
   #state.running { color: var(--ok); border-color: var(--ok); }
+  #state.paused { color: var(--warn); border-color: var(--warn); }
   #state.stopped { color: var(--bad); border-color: var(--bad); }
   #msg { color: var(--muted); }
   #msg.bad { color: var(--bad); }
   main { flex: 1; display: flex; min-height: 0; }
   #editor { flex: 3; border: 0; border-right: 1px solid var(--line); min-width: 0; background: var(--panel); }
-  aside { flex: 2; display: flex; flex-direction: column; min-width: 280px; }
-  #display { flex: 3; border: 0; border-bottom: 1px solid var(--line); background: #000; }
-  .loghead { display: flex; justify-content: space-between; padding: 4px 10px; color: var(--muted);
-             font-size: 12px; }
+  aside { flex: 2; display: flex; flex-direction: column; min-width: 300px; min-height: 0; }
+  #display { flex: 3; min-height: 120px; position: relative; background: #000; border-bottom: 1px solid var(--line); }
+  #display > div { width: 100%; height: 100%; }
+  #nodisplay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+               color: #888; font-size: 13px; pointer-events: none; }
+  #nodisplay[hidden] { display: none; }
+  .head { display: flex; align-items: center; gap: 8px; padding: 4px 10px; color: var(--muted); font-size: 12px; }
+  .head select { font-size: 12px; padding: 1px 4px; }
+  .head .grow { flex: 1; }
+  #dbg { flex: 3; display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--line); }
+  #regs { font: 12px ui-monospace, monospace; color: var(--fg); }
+  #listing { flex: 1; overflow: auto; margin: 0 6px; font: 12px/1.45 ui-monospace, monospace; min-height: 60px; }
+  #listing div { display: grid; grid-template-columns: 1.5ch 6ch 4ch 1fr; column-gap: 1.5ch; padding: 0 4px; border-radius: 3px;
+                 cursor: pointer; white-space: pre; }
+  #listing div:hover { background: var(--line); }
+  #listing div.pc { background: var(--hi); }
+  #listing .bp { color: var(--bad); }
+  #listing .addr, #listing .word { color: var(--muted); }
+  #listing.running { opacity: .55; }
+  #listing .none { display: block; cursor: default; color: var(--muted); white-space: normal; padding: 6px 4px; }
+  .bps { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 10px 6px; font-size: 12px; }
+  .bps input { width: 7em; font: 12px ui-monospace, monospace; padding: 2px 6px; }
+  .bps button { font-size: 12px; padding: 2px 8px; }
+  .chip { font: 12px ui-monospace, monospace; border: 1px solid var(--line); border-radius: 10px; padding: 0 2px 0 8px; }
+  .chip button { border: 0; padding: 0 6px; background: none; }
   #log { flex: 2; margin: 0; padding: 6px 10px; overflow: auto; font: 12px/1.35 ui-monospace, monospace;
-         white-space: pre-wrap; }
+         white-space: pre-wrap; min-height: 60px; }
   @media (max-width: 800px) {
     main { flex-direction: column; }
     #editor { flex: none; height: 55vh; border-right: 0; border-bottom: 1px solid var(--line); }
     aside { min-width: 0; }
     #display { flex: none; height: 50vh; }
+    #dbg { flex: none; height: 40vh; }
+    #log { flex: none; height: 30vh; }
   }
 </style>
 </head>
@@ -47,31 +75,41 @@
 <header>
   <b>Emularium</b>
   <select id="template" title="Start over from one of Emularium's boards"></select>
-  <label class="file" title="An Intel HEX file for the board's PIC">Upload firmware…
-    <input type="file" id="firmware" accept=".hex,.ihx,text/plain"></label>
-  <button id="run" class="primary" title="Restart the board with the saved schematic and firmware">Run</button>
-  <button id="reconnect" title="Reconnect the display">Reconnect display</button>
-  <button id="download" title="The board file, its layout and firmware, as a zip">Download</button>
+  <label class="file off" id="upload">Upload firmware…
+    <input type="file" id="firmware" disabled></label>
+  <span class="group">
+    <button id="run" class="primary" title="(Re)start the board with the saved schematic and firmware">Run</button>
+    <button id="stop" title="End the board until the next Run">Stop</button>
+    <button id="pause" title="Stop or go on, the whole board at once (F8)">Pause</button>
+    <button id="step" title="Run one instruction of the debugger's MCU (F10)">Step</button>
+  </span>
+  <label class="check" title="Run starts the board stopped at its first instruction, for breakpoints and steps from the start">
+    <input type="checkbox" id="startpaused"> start paused</label>
+  <button id="download" title="The board file, its layout and its parts' files, as a zip">Download</button>
   <span id="state">…</span>
   <span id="msg">Edit the board, Save it in the editor (Ctrl+S), then Run.</span>
 </header>
 <main>
   <iframe id="editor" src="/" title="Schematic editor"></iframe>
   <aside>
-    <iframe id="display" title="The board's display"></iframe>
-    <div class="loghead"><span>Emularium's output</span><span id="tmpl"></span></div>
+    <div id="display"><div id="screen"></div><div id="nodisplay">No display</div></div>
+    <section id="dbg">
+      <div class="head"><span>Debugger</span><select id="dev" title="The MCU shown here, and the one Step runs"></select>
+        <span id="regs" class="grow"></span></div>
+      <div id="listing"></div>
+      <div class="bps"><input type="text" id="bpaddr" placeholder="0x005a" title="An address in the MCU's program memory">
+        <button id="bpadd">Break</button><span id="bplist"></span></div>
+    </section>
+    <div class="head"><span class="grow">Emularium's output</span><span id="tmpl"></span></div>
     <pre id="log"></pre>
   </aside>
 </main>
-<script>
+<script type="module">
+import RFB from "/novnc/core/rfb.js";
+
 const $ = id => document.getElementById(id);
 const say = (text, bad) => { $("msg").textContent = text; $("msg").className = bad ? "bad" : ""; };
-
-function reconnect(delay = 1500) {
-  setTimeout(() => {
-    $("display").src = "/novnc/vnc_lite.html?path=websockify&scale=true&t=" + Date.now();
-  }, delay);
-}
+const hex = (n, w = 4) => "0x" + n.toString(16).padStart(w, "0");
 
 async function post(url, body) {
   const r = await fetch(url, { method: "POST", body: body ?? "" });
@@ -80,52 +118,309 @@ async function post(url, body) {
   return text;
 }
 
-// The display reconnects whenever Emularium starts a new run: after Run,
-// an upload or a template, and when the pod restarts it.
-let lastRun = null;
+// ---- the display: noVNC's client, on the front's WebSocket ----------------
+
+let rfb = null, wantDisplay = false;
+function connect() {
+  if (rfb) return;
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/websockify";
+  rfb = new RFB($("screen"), url);
+  rfb.scaleViewport = true;
+  rfb.background = "#000";
+  rfb.addEventListener("connect", () => { $("nodisplay").hidden = true; });
+  rfb.addEventListener("disconnect", () => {
+    rfb = null;
+    $("nodisplay").hidden = false;
+    if (wantDisplay) setTimeout(connect, 1500);
+  });
+}
+function reconnect() {
+  if (rfb) rfb.disconnect(); else connect();
+}
+
+// ---- the parts, and what the editor has selected --------------------------
+
+let parts = {}, editorSel = null;
+async function loadParts() {
+  try { parts = await (await fetch("/session/parts")).json(); } catch { parts = {}; }
+  updateUpload();
+}
+
+window.addEventListener("message", e => {
+  if (e.origin !== location.origin || e.data?.emularium !== "editor") return;
+  editorSel = e.data;
+  const p = parts[editorSel.selected];
+  if (p?.mcu && [...$("dev").options].some(o => o.value === editorSel.selected)) {
+    $("dev").value = editorSel.selected;
+    render();
+  }
+  loadParts();
+});
+
+// Firmware goes to the part selected in the editor, as the file its saved
+// parameters name.
+function uploadTarget() {
+  const sel = editorSel?.selected, p = parts[sel];
+  if (!sel) return { why: "Select an MCU (or a memory with an image) in the editor to upload its firmware." };
+  if (!p || editorSel.saved !== sel) return { text: `Upload ${sel}'s firmware…`, why: `${sel} isn't in the saved board yet: Save it (Ctrl+S) first.` };
+  if (!p.param) return { why: `${sel} (${p.model}) takes no firmware: select an MCU or a memory with an image.` };
+  if (!p.file) return { text: `Upload ${sel}'s ${p.param}…`, why: `${sel} names no ${p.param} file: double-click it, give it one (e.g. ${sel}.hex), and Save.` };
+  return { part: sel, p, text: `Upload ${sel}'s ${p.param}…`,
+           why: `Replaces ${p.file}, ${sel}'s ${p.what}, and restarts the board.` };
+}
+function updateUpload() {
+  const t = uploadTarget();
+  $("upload").firstChild.textContent = t.text || "Upload firmware…";
+  $("upload").title = t.why;
+  $("upload").classList.toggle("off", !t.part);
+  $("firmware").disabled = !t.part;
+  $("firmware").accept = t.p?.mcu ? ".hex,.ihx,text/plain" : "";
+}
+$("upload").onclick = e => { if (!uploadTarget().part) { e.preventDefault(); say(uploadTarget().why, true); } };
+$("firmware").onchange = async e => {
+  const f = e.target.files[0], t = uploadTarget();
+  e.target.value = "";
+  if (!f || !t.part) return;
+  try {
+    const where = await post("/session/firmware?part=" + encodeURIComponent(t.part), await f.arrayBuffer());
+    rom.key = null;
+    say(`${f.name} is now ${where}; restarted.`);
+    refresh();
+  } catch (err) { say(err.message, true); }
+};
+
+// ---- PIC14 (PIC16F876) disassembly -----------------------------------------
+
+// Program words by address, from an Intel HEX file (bytes, little endian).
+function parseHex(text) {
+  const bytes = new Map();
+  let base = 0;
+  for (const line of text.split(/\s+/)) {
+    if (!line.startsWith(":")) continue;
+    const b = line.slice(1).match(/../g).map(h => parseInt(h, 16));
+    const [n, hi, lo, type] = b, data = b.slice(4, 4 + n);
+    if (type === 4) base = (data[0] << 24 | data[1] << 16) >>> 0;
+    if (type !== 0) continue;
+    data.forEach((v, i) => bytes.set(base + (hi << 8 | lo) + i, v));
+  }
+  const words = new Map();
+  for (const [a, v] of bytes) {
+    if (a & 1 || a >> 1 >= 0x2000) continue;
+    words.set(a >> 1, (v | (bytes.get(a + 1) ?? 0) << 8) & 0x3fff);
+  }
+  return new Map([...words].sort((x, y) => x[0] - y[0]));
+}
+
+// Names the same in every bank; others depend on RP0/RP1, so are numbers.
+const SFR = { 0: "INDF", 2: "PCL", 3: "STATUS", 4: "FSR", 0xa: "PCLATH", 0xb: "INTCON" };
+const STATUS_BITS = ["C", "DC", "Z", "PD", "TO", "RP0", "RP1", "IRP"];
+const BYTE_OPS = [null, null, "SUBWF", "DECF", "IORWF", "ANDWF", "XORWF", "ADDWF",
+                  "MOVF", "COMF", "INCF", "DECFSZ", "RRF", "RLF", "SWAPF", "INCFSZ"];
+const reg = f => SFR[f] ?? hex(f, 2);
+function disasm(w) {
+  const f = w & 0x7f, d = w & 0x80 ? "F" : "W", k = w & 0xff;
+  switch (w >> 12) {
+    case 0: {
+      if (w === 0x0008) return "RETURN";
+      if (w === 0x0009) return "RETFIE";
+      if (w === 0x0062) return "OPTION";
+      if (w === 0x0063) return "SLEEP";
+      if (w === 0x0064) return "CLRWDT";
+      if (w >= 0x0065 && w <= 0x0067) return "TRIS " + (w & 7);
+      if ((w & 0x3f9f) === 0) return "NOP";
+      const op = w >> 8 & 0xf;
+      if (op === 0) return w & 0x80 ? "MOVWF " + reg(f) : "?";
+      if (op === 1) return w & 0x80 ? "CLRF " + reg(f) : "CLRW";
+      return `${BYTE_OPS[op]} ${reg(f)}, ${d}`;
+    }
+    case 1: {
+      const bit = w >> 7 & 7;
+      return `${["BCF", "BSF", "BTFSC", "BTFSS"][w >> 10 & 3]} ${reg(f)}, ${f === 3 ? STATUS_BITS[bit] : bit}`;
+    }
+    case 2: return `${w & 0x800 ? "GOTO" : "CALL"} ${hex(w & 0x7ff, 3)}`;
+    default: {
+      const op = w >> 8 & 0xf;
+      if (op < 4) return "MOVLW " + hex(k, 2);
+      if (op < 8) return "RETLW " + hex(k, 2);
+      return ({ 8: "IORLW", 9: "ANDLW", 10: "XORLW", 11: "?", 12: "SUBLW", 13: "SUBLW", 14: "ADDLW", 15: "ADDLW" })[op] + " " + hex(k, 2);
+    }
+  }
+}
+
+// The firmware of the debugger's MCU, fetched again for each run.
+const rom = { key: null, words: null, error: null };
+async function loadRom(dev) {
+  const key = dev + "/" + lastRun;
+  if (rom.key === key) return;
+  rom.key = key;
+  try {
+    const r = await fetch("/session/firmware?part=" + encodeURIComponent(dev));
+    if (!r.ok) throw new Error(await r.text());
+    rom.words = parseHex(await r.text());
+    rom.error = null;
+  } catch (e) { rom.words = null; rom.error = e.message; }
+  render();
+}
+
+// ---- the debugger ------------------------------------------------------------
+
+let status = null, dbg = null, lastRun = null;
+const device = () => dbg?.devices.find(d => d.name === $("dev").value) ?? dbg?.devices[0];
+const stopped = () => dbg?.state === "stopped";
+
+async function command(line) {
+  try {
+    const r = await fetch("/session/debug", { method: "POST", body: line });
+    const text = await r.text();
+    if (!r.ok) throw new Error(text);
+    const answer = JSON.parse(text);
+    if (answer.error) throw new Error(answer.error);
+    if (answer.devices) { dbg = answer; render(); }
+    return answer;
+  } catch (e) { say(e.message, true); return null; }
+}
+
+function toggleBreak(dev, addr) {
+  const on = dev.breakpoints.includes(addr);
+  command(`${on ? "delete" : "break"} ${dev.name} ${hex(addr)}`);
+}
+
+function render() {
+  // Buttons and the state chip.
+  const st = (status?.state || "").split(" ");
+  const emu = st[0] || "starting";
+  let chip = emu, cls = emu;
+  if (emu === "running" && stopped()) {
+    cls = "paused";
+    chip = dbg.reason === "breakpoint" ? `breakpoint on ${dbg.device}` : dbg.reason === "start" ? "paused at start" : "paused";
+  } else if (emu === "stopped") chip = st[2] === "stop" ? "stopped" : "stopped (error)";
+  $("state").textContent = chip;
+  $("state").className = cls;
+  $("stop").disabled = emu !== "running";
+  $("pause").disabled = !dbg;
+  $("pause").textContent = stopped() ? "Continue" : "Pause";
+  $("step").disabled = !stopped();
+
+  // The MCUs to choose from, keeping the choice.
+  const names = dbg ? dbg.devices.map(d => d.name) : Object.keys(parts).filter(n => parts[n].mcu);
+  const sel = $("dev");
+  if ([...sel.options].map(o => o.value).join() !== names.join()) {
+    const keep = sel.value;
+    sel.replaceChildren(...names.map(n => new Option(n, n)));
+    if (names.includes(keep)) sel.value = keep;
+  }
+  const dev = device();
+  if (sel.value) loadRom(sel.value);
+
+  // Registers.
+  if (dev) {
+    const s = dev.regs.STATUS ?? 0;
+    const flags = ["Z", "DC", "C"].filter(b => s >> STATUS_BITS.indexOf(b) & 1).join(" ") || "-";
+    $("regs").textContent = `PC ${hex(dev.pc)}  W ${hex(dev.regs.W ?? 0, 2)}  STATUS ${hex(s, 2)} (${flags}, bank ${s >> 5 & 3})  ` +
+      `${(dbg.time_ns / 1e6).toFixed(3)} ms`;
+  } else $("regs").textContent = emu === "running" ? "" : "Run the board to debug it.";
+
+  // The listing around the PC.
+  const list = $("listing");
+  list.classList.toggle("running", !!dbg && !stopped());
+  if (!sel.value) list.replaceChildren(Object.assign(document.createElement("div"), { className: "none", textContent: "The board has no MCU." }));
+  else if (!rom.words) list.replaceChildren(Object.assign(document.createElement("div"), { className: "none", textContent: rom.error || "…" }));
+  else {
+    const pc = dev?.pc ?? 0, rows = [];
+    const addrs = [...rom.words.keys()].filter(a => a >= pc - 6 && a <= pc + 14);
+    for (const a of addrs) {
+      const row = document.createElement("div");
+      const bp = dev?.breakpoints.includes(a);
+      if (dev && a === pc) row.className = "pc";
+      row.title = bp ? "Click to remove the breakpoint" : "Click to stop the board before this instruction";
+      for (const [c, t] of [["bp", bp ? "●" : ""], ["addr", hex(a)], ["word", rom.words.get(a).toString(16).padStart(4, "0")],
+                            ["", (dev && a === pc ? "▶ " : "  ") + disasm(rom.words.get(a))]]) {
+        row.append(Object.assign(document.createElement("span"), { className: c, textContent: t }));
+      }
+      if (dev) row.onclick = () => toggleBreak(dev, a);
+      rows.push(row);
+    }
+    list.replaceChildren(...rows);
+  }
+
+  // Breakpoints, on every MCU.
+  const chips = [];
+  for (const d of dbg?.devices ?? []) for (const a of d.breakpoints) {
+    const c = Object.assign(document.createElement("span"), { className: "chip", textContent: `${d.name} ${hex(a)}` });
+    const x = Object.assign(document.createElement("button"), { textContent: "×", title: "Remove" });
+    x.onclick = () => command(`delete ${d.name} ${hex(a)}`);
+    c.append(x);
+    chips.push(c);
+  }
+  $("bplist").replaceChildren(...chips);
+  $("bpadd").disabled = !dev;
+}
+
+$("dev").onchange = render;
+$("bpadd").onclick = () => {
+  const a = $("bpaddr").value.trim(), dev = device();
+  if (!a || !dev) return;
+  command(`break ${dev.name} ${a}`).then(r => { if (r) $("bpaddr").value = ""; });
+};
+$("bpaddr").onkeydown = e => { if (e.key === "Enter") $("bpadd").click(); };
+
+// ---- the session -------------------------------------------------------------
 
 async function refresh() {
   try {
-    const s = await (await fetch("/session/status")).json();
-    const st = s.state.split(" ");
+    status = await (await fetch("/session/status")).json();
+    dbg = status.debug && status.debug.devices ? status.debug : null;
+    const st = status.state.split(" ");
+    wantDisplay = st[0] === "running";
+    // A new run: reconnect the display, and read the firmware again.
     if (st[0] === "running" && st[1] !== lastRun) {
-      if (lastRun !== null) reconnect(1000);
+      if (lastRun !== null) setTimeout(reconnect, 800); else connect();
       lastRun = st[1];
     }
-    $("state").textContent = st[0] === "running" ? "running" : st[0] === "stopped" ? "stopped" : "starting";
-    $("state").className = st[0];
-    $("tmpl").textContent = s.template ? "from " + s.template : "";
+    $("tmpl").textContent = status.template ? "from " + status.template : "";
     const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
-    if (log.textContent !== s.log) {
-      log.textContent = s.log;
+    if (log.textContent !== status.log) {
+      log.textContent = status.log;
       if (atEnd) log.scrollTop = log.scrollHeight;
     }
-    if (s.template && $("template").value !== s.template) $("template").value = s.template;
-  } catch (e) { $("state").textContent = "no session"; $("state").className = "stopped"; }
+    if (status.template && $("template").value !== status.template) $("template").value = status.template;
+  } catch (e) { status = null; dbg = null; $("state").textContent = "no session"; $("state").className = "stopped"; return; }
+  render();
 }
 
+try { $("startpaused").checked = localStorage.getItem("emularium.startPaused") === "1"; } catch {}
+$("startpaused").onchange = e => { try { localStorage.setItem("emularium.startPaused", e.target.checked ? "1" : "0"); } catch {} };
+
 $("run").onclick = async () => {
-  try { await post("/session/run"); say("Restarted with the saved board."); refresh(); }
-  catch (e) { say(e.message, true); }
+  const paused = $("startpaused").checked;
+  try {
+    await post("/session/run" + (paused ? "?paused=1" : ""));
+    say(paused ? "Restarted, paused at the first instruction: Step or Continue." : "Restarted with the saved board.");
+    refresh();
+  } catch (e) { say(e.message, true); }
 };
-$("reconnect").onclick = () => reconnect(0);
+$("stop").onclick = async () => {
+  try { await post("/session/stop"); say("Stopped."); refresh(); } catch (e) { say(e.message, true); }
+};
+$("pause").onclick = () => command(stopped() ? "continue" : "pause");
+$("step").onclick = () => { const d = device(); if (d) command("step " + d.name); };
+document.addEventListener("keydown", e => {
+  if (e.target.closest?.("input, select")) return;
+  if (e.key === "F8") { e.preventDefault(); if (!$("pause").disabled) $("pause").click(); }
+  if (e.key === "F10") { e.preventDefault(); if (!$("step").disabled) $("step").click(); }
+});
 $("download").onclick = () => { location.href = "/session/download"; };
-$("firmware").onchange = async e => {
-  const f = e.target.files[0];
-  if (!f) return;
-  try { await post("/session/firmware", await f.text()); say("Firmware " + f.name + " loaded; restarted."); refresh(); }
-  catch (err) { say(err.message, true); }
-  e.target.value = "";
-};
 $("template").onchange = async e => {
   const name = e.target.value;
-  if (!confirm("Start over from the " + name + " board? The current board and firmware are replaced.")) {
+  if (!confirm("Start over from the " + name + " board? The current board, its firmware and breakpoints are replaced.")) {
     refresh(); return;
   }
   try {
     await post("/session/template?name=" + encodeURIComponent(name));
     $("editor").src = "/?t=" + Date.now();
+    rom.key = null;
     say("Started over from " + name + ".");
+    loadParts();
     refresh();
   } catch (err) { say(err.message, true); }
 };
@@ -133,8 +428,8 @@ $("template").onchange = async e => {
 (async () => {
   const names = await (await fetch("/session/templates")).json();
   for (const n of names) $("template").append(new Option(n, n));
+  await loadParts();
   await refresh();
-  reconnect(0);
   setInterval(refresh, 1000);
 })();
 </script>
