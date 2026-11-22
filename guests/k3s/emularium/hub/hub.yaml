@@ -1,0 +1,76 @@
+# The Emularium hub: http://192.168.100.2:30999/ gives each user a session
+# of their own (hub.py). It creates session pods and their NodePort
+# Services, so its ServiceAccount may do that, in this namespace only.
+# There are no accounts: anyone who reaches the hub can start and end
+# sessions, so it belongs on a trusted network only.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: emularium-hub
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: emularium-hub
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: emularium-hub
+subjects:
+  - kind: ServiceAccount
+    name: emularium-hub
+roleRef:
+  kind: Role
+  name: emularium-hub
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emularium-hub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: emularium-hub
+  template:
+    metadata:
+      labels:
+        app: emularium-hub
+    spec:
+      serviceAccountName: emularium-hub
+      containers:
+        - name: hub
+          image: emularium-session:1
+          imagePullPolicy: Never
+          command: ["python3", "/opt/hub/hub.py"]
+          env:
+            - { name: MAX_SESSIONS, value: "4" }   # each takes ~0.35 of a core
+            - { name: IDLE_MINUTES, value: "30" }  # no page open for this long
+            - { name: MAX_HOURS, value: "8" }
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emularium-hub
+spec:
+  type: NodePort
+  selector:
+    app: emularium-hub
+  ports:
+    - port: 8080
+      targetPort: http
+      nodePort: 30999

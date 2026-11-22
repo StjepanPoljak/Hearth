@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emularium hub</title>
+<style>
+  :root { --bg: #f6f6f4; --fg: #1d1d1b; --muted: #6b6b66; --line: #d9d9d4; --panel: #fff;
+          --accent: #2f6fdd; --ok: #2e8b57; --bad: #c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #18181a; --fg: #e8e8e4; --muted: #9a9a94; --line: #34343a; --panel: #212125;
+            --accent: #6d9cf0; --ok: #5cc28a; --bad: #e5675a; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 24px; }
+  .new { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 16px;
+         background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  button, select { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line);
+                   background: var(--panel); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  #msg { color: var(--muted); }
+  #msg.bad { color: var(--bad); }
+  table { width: 100%; border-collapse: collapse; margin-top: 24px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  td.state.ready { color: var(--ok); }
+  a { color: var(--accent); }
+  .empty { color: var(--muted); padding: 16px 6px; }
+  @media (max-width: 560px) { th:nth-child(3), td:nth-child(3) { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Emularium</h1>
+  <p class="lead">Your own emulated board: draw its schematic, upload firmware for its PIC and run it,
+    all in the browser. Each session is a pod of its own.</p>
+  <div class="new">
+    <label>Start from <select id="template"></select></label>
+    <button id="create" class="primary">New session</button>
+    <span id="msg"></span>
+  </div>
+  <table>
+    <thead><tr><th>Session</th><th>State</th><th>Age / idle</th><th></th></tr></thead>
+    <tbody id="list"></tbody>
+  </table>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const say = (t, bad) => { $("msg").textContent = t; $("msg").className = bad ? "bad" : ""; };
+const mins = s => s == null ? "–" : s < 60 ? s + " s" : Math.floor(s / 60) + " min";
+let waitingFor = null;
+
+async function load() {
+  const r = await fetch("/api/sessions");
+  const j = await r.json();
+  if (!r.ok) { say(j.error, true); return; }
+  if (!$("template").options.length)
+    for (const t of j.templates) $("template").append(new Option(t, t));
+  const rows = j.sessions.map(s => {
+    const tr = document.createElement("tr");
+    const state = s.ready ? "ready" : s.phase === "Running" ? "starting" : s.phase.toLowerCase();
+    tr.innerHTML = `<td></td><td class="state ${s.ready ? "ready" : ""}">${state}</td>
+      <td>${mins(s.age)} / ${mins(s.idle)}</td><td></td>`;
+    const a = document.createElement(s.ready && s.url ? "a" : "span");
+    a.textContent = s.name;
+    if (s.ready && s.url) a.href = s.url;
+    tr.cells[0].append(a);
+    const end = document.createElement("button");
+    end.textContent = "End";
+    end.onclick = async () => {
+      if (!confirm("End " + s.name + "? Its board and firmware are lost; download them first if you want them.")) return;
+      await fetch("/api/sessions/" + s.name, { method: "DELETE" });
+      load();
+    };
+    tr.cells[3].append(end);
+    if (s.name === waitingFor && s.ready && s.url) { waitingFor = null; location.href = s.url; }
+    return tr;
+  });
+  $("list").replaceChildren(...rows);
+  if (!rows.length) $("list").innerHTML = `<tr><td class="empty" colspan="4">No sessions.</td></tr>`;
+  $("create").disabled = j.sessions.length >= j.max;
+  if (j.sessions.length >= j.max && !waitingFor) say(`All ${j.max} sessions are in use.`);
+  else if (!waitingFor && $("msg").textContent.startsWith("All")) say("");
+  document.title = `Emularium hub (${j.sessions.length}/${j.max})`;
+}
+
+$("create").onclick = async () => {
+  $("create").disabled = true;
+  say("Starting a session…");
+  const r = await fetch("/api/sessions?template=" + encodeURIComponent($("template").value), { method: "POST" });
+  const j = await r.json();
+  if (!r.ok) { say(j.error, true); $("create").disabled = false; return; }
+  waitingFor = j.name;
+  say("Starting " + j.name + "; it opens when ready.");
+  load();
+};
+
+load();
+setInterval(load, 2000);
+</script>
+</body>
+</html>

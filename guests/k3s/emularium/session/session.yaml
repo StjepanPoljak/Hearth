@@ -1,0 +1,86 @@
+# One Emularium session, by hand: kubectl apply -f session.yaml, then open
+# http://192.168.100.2:31000/session/ in a browser. The hub (../hub) makes
+# sessions like this one per user, from the same pod spec.
+#
+# The containers share /work, a scratch volume that goes with the pod, and
+# the pod's network namespace. Emularium and its schematic editor listen on
+# 127.0.0.1 only, so the front is the one server on the pod's address: it
+# serves the page and passes the editor's requests and the VNC WebSocket
+# through. Anyone who can reach the port can use the session.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emularium-session
+  labels:
+    app: emularium-session
+spec:
+  initContainers:
+    # The board to start from, unless /work has one already.
+    - name: template
+      image: emularium-session:1
+      imagePullPolicy: Never
+      command: ["python3", "/opt/session/front.py", "--init", "tetris"]
+      volumeMounts:
+        - { name: work, mountPath: /work }
+  containers:
+    - name: front
+      image: emularium-session:1
+      imagePullPolicy: Never
+      command: ["python3", "/opt/session/front.py", "--port", "8080"]
+      ports:
+        - { name: http, containerPort: 8080 }
+      readinessProbe:
+        httpGet: { path: /session/idle, port: http }   # not counted as use
+        periodSeconds: 5
+      resources:
+        requests: { cpu: 20m, memory: 32Mi }
+        limits: { memory: 128Mi }
+      volumeMounts:
+        - { name: work, mountPath: /work }
+    - name: editor
+      image: emularium-session:1
+      imagePullPolicy: Never
+      command: ["python3", "/opt/emularium/tools/schematic.py", "/work/board.toml",
+                "--no-browser", "--port", "8001"]
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits: { memory: 128Mi }
+      volumeMounts:
+        - { name: work, mountPath: /work }
+    - name: emulator
+      image: emularium-session:1
+      imagePullPolicy: Never
+      command: ["emulator-loop"]
+      # A board simulates its PIC in real time: about a third of a core.
+      # The limit keeps a runaway board from starving the other sessions.
+      resources:
+        requests: { cpu: 350m, memory: 16Mi }
+        limits: { cpu: "1", memory: 128Mi }
+      volumeMounts:
+        - { name: work, mountPath: /work }
+    - name: websockify
+      image: emularium-session:1
+      imagePullPolicy: Never
+      command: ["websockify", "127.0.0.1:6080", "127.0.0.1:5900"]
+      resources:
+        requests: { cpu: 10m, memory: 16Mi }
+        limits: { memory: 64Mi }
+  volumes:
+    - name: work
+      emptyDir:
+        sizeLimit: 16Mi
+  # Nothing in a session saves anything on the way out.
+  terminationGracePeriodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emularium-session
+spec:
+  type: NodePort
+  selector:
+    app: emularium-session
+  ports:
+    - port: 8080
+      targetPort: http
+      nodePort: 31000

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emularium session</title>
+<style>
+  :root { --bg: #f6f6f4; --fg: #1d1d1b; --muted: #6b6b66; --line: #d9d9d4; --panel: #fff;
+          --accent: #2f6fdd; --ok: #2e8b57; --bad: #c0392b; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #18181a; --fg: #e8e8e4; --muted: #9a9a94; --line: #34343a; --panel: #212125;
+            --accent: #6d9cf0; --ok: #5cc28a; --bad: #e5675a; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
+         font: 14px/1.4 system-ui, sans-serif; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 12px;
+           border-bottom: 1px solid var(--line); }
+  header b { font-size: 15px; margin-right: 4px; }
+  button, select, label.file { font: inherit; padding: 4px 10px; border: 1px solid var(--line);
+           border-radius: 6px; background: var(--panel); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  label.file input { display: none; }
+  #state { padding: 2px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--line); }
+  #state.running { color: var(--ok); border-color: var(--ok); }
+  #state.stopped { color: var(--bad); border-color: var(--bad); }
+  #msg { color: var(--muted); }
+  #msg.bad { color: var(--bad); }
+  main { flex: 1; display: flex; min-height: 0; }
+  #editor { flex: 3; border: 0; border-right: 1px solid var(--line); min-width: 0; background: var(--panel); }
+  aside { flex: 2; display: flex; flex-direction: column; min-width: 280px; }
+  #display { flex: 3; border: 0; border-bottom: 1px solid var(--line); background: #000; }
+  .loghead { display: flex; justify-content: space-between; padding: 4px 10px; color: var(--muted);
+             font-size: 12px; }
+  #log { flex: 2; margin: 0; padding: 6px 10px; overflow: auto; font: 12px/1.35 ui-monospace, monospace;
+         white-space: pre-wrap; }
+  @media (max-width: 800px) {
+    main { flex-direction: column; }
+    #editor { flex: none; height: 55vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    aside { min-width: 0; }
+    #display { flex: none; height: 50vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <b>Emularium</b>
+  <select id="template" title="Start over from one of Emularium's boards"></select>
+  <label class="file" title="An Intel HEX file for the board's PIC">Upload firmware…
+    <input type="file" id="firmware" accept=".hex,.ihx,text/plain"></label>
+  <button id="run" class="primary" title="Restart the board with the saved schematic and firmware">Run</button>
+  <button id="reconnect" title="Reconnect the display">Reconnect display</button>
+  <button id="download" title="The board file, its layout and firmware, as a zip">Download</button>
+  <span id="state">…</span>
+  <span id="msg">Edit the board, Save it in the editor (Ctrl+S), then Run.</span>
+</header>
+<main>
+  <iframe id="editor" src="/" title="Schematic editor"></iframe>
+  <aside>
+    <iframe id="display" title="The board's display"></iframe>
+    <div class="loghead"><span>Emularium's output</span><span id="tmpl"></span></div>
+    <pre id="log"></pre>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const say = (text, bad) => { $("msg").textContent = text; $("msg").className = bad ? "bad" : ""; };
+
+function reconnect(delay = 1500) {
+  setTimeout(() => {
+    $("display").src = "/novnc/vnc_lite.html?path=websockify&scale=true&t=" + Date.now();
+  }, delay);
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", body: body ?? "" });
+  const text = await r.text();
+  if (!r.ok) throw new Error(text);
+  return text;
+}
+
+// The display reconnects whenever Emularium starts a new run: after Run,
+// an upload or a template, and when the pod restarts it.
+let lastRun = null;
+
+async function refresh() {
+  try {
+    const s = await (await fetch("/session/status")).json();
+    const st = s.state.split(" ");
+    if (st[0] === "running" && st[1] !== lastRun) {
+      if (lastRun !== null) reconnect(1000);
+      lastRun = st[1];
+    }
+    $("state").textContent = st[0] === "running" ? "running" : st[0] === "stopped" ? "stopped" : "starting";
+    $("state").className = st[0];
+    $("tmpl").textContent = s.template ? "from " + s.template : "";
+    const log = $("log"), atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+    if (log.textContent !== s.log) {
+      log.textContent = s.log;
+      if (atEnd) log.scrollTop = log.scrollHeight;
+    }
+    if (s.template && $("template").value !== s.template) $("template").value = s.template;
+  } catch (e) { $("state").textContent = "no session"; $("state").className = "stopped"; }
+}
+
+$("run").onclick = async () => {
+  try { await post("/session/run"); say("Restarted with the saved board."); refresh(); }
+  catch (e) { say(e.message, true); }
+};
+$("reconnect").onclick = () => reconnect(0);
+$("download").onclick = () => { location.href = "/session/download"; };
+$("firmware").onchange = async e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  try { await post("/session/firmware", await f.text()); say("Firmware " + f.name + " loaded; restarted."); refresh(); }
+  catch (err) { say(err.message, true); }
+  e.target.value = "";
+};
+$("template").onchange = async e => {
+  const name = e.target.value;
+  if (!confirm("Start over from the " + name + " board? The current board and firmware are replaced.")) {
+    refresh(); return;
+  }
+  try {
+    await post("/session/template?name=" + encodeURIComponent(name));
+    $("editor").src = "/?t=" + Date.now();
+    say("Started over from " + name + ".");
+    refresh();
+  } catch (err) { say(err.message, true); }
+};
+
+(async () => {
+  const names = await (await fetch("/session/templates")).json();
+  for (const n of names) $("template").append(new Option(n, n));
+  await refresh();
+  reconnect(0);
+  setInterval(refresh, 1000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+#!/bin/sh
+# Runs Emularium on /work/board.toml, its output in /work/emulator.log and
+# its state in /work/emulator.state for the session's page. The front's
+# Run creates /work/.restart, which restarts it; a board that stops by
+# itself, or doesn't load, waits for the next Run. The state counts the
+# runs, so that the page can tell a new run from the last one.
+cd "${WORK:-/work}" || exit 1
+run=0
+while true; do
+    rm -f .restart
+    run=$((run + 1))
+    echo "running $run" > emulator.state
+    emularium board.toml > emulator.log 2>&1 &
+    pid=$!
+    while [ ! -e .restart ] && kill -0 $pid 2>/dev/null; do sleep 0.3; done
+    if [ -e .restart ]; then
+        kill $pid 2>/dev/null
+        wait $pid
+    else
+        wait $pid
+        status=$?
+        echo "[Emularium stopped, status $status. Press Run to start it again.]" >> emulator.log
+        echo "stopped $run $status" > emulator.state
+        while [ ! -e .restart ]; do sleep 0.3; done
+    fi
+done

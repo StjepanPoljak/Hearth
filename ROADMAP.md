@@ -33,3 +33,20 @@ Goal: device threads do their own I/O and never interrupt a vcpu.
 `--binary` RAM starts at 0 and must end below the GIC at 0x8000000, so it is
 limited to 128M (more is an error). For more, move binary RAM above the
 devices, e.g. to 1G where Linux's RAM is, with the load address following it.
+
+## Emularium sessions in k3s
+
+Done (`guests/k3s/emularium/`): a session pod per user, with Emularium's
+schematic editor, firmware upload, Run and the board's display in the
+browser, and a hub that creates, caps and ends sessions. What's left:
+
+- **Accounts**: a session belongs to whoever has its address, and anyone
+  who reaches the hub can start and end sessions.
+- **One address for everything**: each session has its own NodePort. Behind
+  one port, sessions would need a path prefix, which Emularium's editor
+  doesn't allow (it uses absolute paths: `/`, `/api/save`); a listen
+  address and a base path in Emularium itself would fix both that and the
+  front's proxying.
+- **Assembling in the session**: Alpine has no PIC assembler (`gputils`).
+- **The UART and VCD traces** in the page.
+- **Keeping a session**: it goes with its pod; Download is the only way out.
